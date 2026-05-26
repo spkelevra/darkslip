@@ -9,7 +9,7 @@ darkslip is a simple, opinionated markdown editor for quick scratch notes. Focus
 Android: Installed the APK > Go to Settings > Enable Storage permissions > Force close/restart darkslip
 - markdown files will be stored in /Documents/darkslip
 
-## USAGE
+## Usage
 
 Main Menu:
 - Recent notes: 3x3 grid showing recently accessed notes in order, saves between sessins
