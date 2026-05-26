@@ -12,11 +12,11 @@ Android: Installed the APK > Go to Settings > Enable Storage permissions > Force
 ## USAGE
 
 Main Menu:
--Recent notes: 3x3 grid showing recently accessed notes in order, saves between sessins
--Refresh: Refresh the directory. Useful if markdown notes are added from another source into a sub-folder
--Add Folder: Creates new base folder
--Settings: Currently only for enabling storage
--Space Name: Hold the "darkslip" name to rename the space to your liking
+- Recent notes: 3x3 grid showing recently accessed notes in order, saves between sessins
+- Refresh: Refresh the directory. Useful if markdown notes are added from another source into a sub-folder
+- Add Folder: Creates new base folder
+- Settings: Currently only for enabling storage
+- Space Name: Hold the "darkslip" name to rename the space to your liking
 
 Base Folder/Sub Folder/Note structure: Create a base folder (Top Right Folder icon) > Sub-Folder (Plus symbol) > Notes (Plus symbol)
 - Holding a Base Folder/Sub Folder brings up rename/delete option
