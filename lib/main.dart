@@ -9,7 +9,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-
 // ================= LINK CACHE (Zero External Dependencies) =================
 class LinkCache extends ChangeNotifier {
   final String _cachePath;
@@ -38,43 +37,230 @@ class LinkCache extends ChangeNotifier {
   /// Fetches & caches summary if missing. Uses built-in dart:io (no pub dependency)
   Future<void> ensureCached(String url) async {
     if (_cache.containsKey(url)) return;
-    
+
     try {
       final client = HttpClient();
       client.userAgent = 'Mozilla/5.0 (compatible; DarkSlip/1.0)';
-      
-      final request = await client.getUrl(Uri.parse(url)).timeout(const Duration(seconds: 4));
+
+      // Handle redirects to get the real URL for better parsing
+      Uri uri = Uri.parse(url);
+
+      // Special handling for Google Maps Short Links
+      if (uri.host.contains('maps.app.goo.gl') || uri.host.contains('goo.gl')) {
+        final request = await client.getUrl(uri).timeout(const Duration(seconds: 4));
+        final response = await request.close();
+
+        // Follow redirect to get the actual maps.google.com URL
+        if (response.statusCode == 301 || response.statusCode == 302) {
+          String? location = response.headers.value('location');
+          if (location != null) {
+            uri = Uri.parse(location);
+          }
+        } else {
+          // If no redirect, try to parse the short link page itself (rarely works for maps)
+          return;
+        }
+      }
+
+      final request = await client.getUrl(uri).timeout(const Duration(seconds: 4));
       final response = await request.close();
-      
+
       if (response.statusCode == 200) {
         String html = await response.transform(utf8.decoder).join();
-        String summary = _extractDescription(html);
-        if (summary.isNotEmpty) {
-          _cache[url] = summary;
-          await _save();
-          notifyListeners(); // Triggers UI to show new summary
+
+        // Try Special Handlers first for known problematic sites
+        String? specialSummary = _handleSpecialSites(uri, html);
+
+        if (specialSummary != null && specialSummary.isNotEmpty) {
+          _cache[url] = specialSummary;
+        } else {
+          // Fallback to generic meta tag extraction
+          String summary = _extractDescription(html);
+          if (summary.isNotEmpty) {
+            _cache[url] = summary;
+          }
         }
+
+        await _save();
+        notifyListeners();
       }
     } catch (_) {}
   }
 
+  /// Handles sites that don't use standard meta tags or require specific parsing
+  String? _handleSpecialSites(Uri uri, String html) {
+    final host = uri.host.toLowerCase();
+
+    // --- GOOGLE MAPS ---
+    if (host.contains('maps.google')) {
+      return _parseGoogleMaps(html);
+    }
+
+    // --- YOUTUBE ---
+    if (host.contains('youtube.com') || host.contains('youtu.be')) {
+      return _parseYouTube(html);
+    }
+
+    // --- TWITTER / X ---
+    if (host.contains('twitter.com') || host.contains('x.com')) {
+      return _parseTwitter(html);
+    }
+
+    // --- REDDIT ---
+    if (host.contains('reddit.com')) {
+      return _parseReddit(html);
+    }
+
+    return null;
+  }
+
+  /// Extracts Place Name and Address from Google Maps HTML
+  String? _parseGoogleMaps(String html) {
+    try {
+      // Look for the "place" object in the JSON-LD or script tags
+      // Common pattern: "name":"The Westin Peachtree Plaza", ... "address":"..."
+
+      // Try to find the title from og:title first (sometimes present on full maps links)
+      final ogTitle = RegExp(r'<meta\s+property="og:title"\s+content="([^"]*)"', caseSensitive: false).firstMatch(html);
+      if (ogTitle != null && ogTitle.group(1)!.isNotEmpty) {
+        return _cleanAndTruncate(_removeSiteSuffix(ogTitle.group(1)!));
+      }
+
+      // Try to find the place name in script tags containing "place" data
+      // This regex looks for a JSON-like structure often found in Maps scripts
+      final placeMatch = RegExp(r'"name"\s*:\s*"([^"]+)"', caseSensitive: false).firstMatch(html);
+
+      if (placeMatch != null) {
+        String name = placeMatch.group(1)!;
+
+        // Try to find address nearby
+        final addrMatch = RegExp(r'"address"\s*:\s*"([^"]+)"', caseSensitive: false).firstMatch(html);
+        String? address = addrMatch?.group(1);
+
+        if (address != null && address.isNotEmpty) {
+          return _cleanAndTruncate('$name · $address');
+        } else {
+          return _cleanAndTruncate(name);
+        }
+      }
+
+      // Fallback: Look for h1 or title tag which might contain the place name
+      final titleMatch = RegExp(r'<title[^>]*>(.*?)</title>', caseSensitive: false).firstMatch(html);
+      if (titleMatch != null) {
+        return _cleanAndTruncate(_removeSiteSuffix(titleMatch.group(1)!));
+      }
+
+    } catch (_) {}
+    return null;
+  }
+
+  /// Extracts Video Title from YouTube
+  String? _parseYouTube(String html) {
+    try {
+      final titleMatch = RegExp(r'<title[^>]*>(.*?)</title>', caseSensitive: false).firstMatch(html);
+      if (titleMatch != null) {
+        return _cleanAndTruncate(_removeSiteSuffix(titleMatch.group(1)!));
+      }
+
+      // Fallback to og:title
+      final ogTitle = RegExp(r'<meta\s+property="og:title"\s+content="([^"]*)"', caseSensitive: false).firstMatch(html);
+      if (ogTitle != null) {
+        return _cleanAndTruncate(ogTitle.group(1)!);
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// Extracts Tweet Text from Twitter/X
+  String? _parseTwitter(String html) {
+    try {
+      // Twitter embeds tweet text in a script tag with id="initial-tweets" or similar JSON
+      final tweetMatch = RegExp(r'"text"\s*:\s*"([^"]+)"', caseSensitive: false).firstMatch(html);
+      if (tweetMatch != null) {
+        return _cleanAndTruncate(tweetMatch.group(1)!);
+      }
+
+      // Fallback to og:description
+      final desc = RegExp(r'<meta\s+property="og:description"\s+content="([^"]*)"', caseSensitive: false).firstMatch(html);
+      if (desc != null) {
+        return _cleanAndTruncate(desc.group(1)!);
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// Extracts Post Title from Reddit
+  String? _parseReddit(String html) {
+    try {
+      final titleMatch = RegExp(r'<title[^>]*>(.*?)</title>', caseSensitive: false).firstMatch(html);
+      if (titleMatch != null) {
+        return _cleanAndTruncate(_removeSiteSuffix(titleMatch.group(1)!));
+      }
+
+      // Fallback to og:title
+      final ogTitle = RegExp(r'<meta\s+property="og:title"\s+content="([^"]*)"', caseSensitive: false).firstMatch(html);
+      if (ogTitle != null) {
+        return _cleanAndTruncate(ogTitle.group(1)!);
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// Generic extraction for standard websites
   String _extractDescription(String html) {
-    final ogMatch = RegExp(r'<meta\s+property="og:description"\s+content="([^"]*)"', caseSensitive: false).firstMatch(html);
-    if (ogMatch != null && ogMatch.group(1)!.isNotEmpty) return _truncate(ogMatch.group(1)!);
+    // 1. Try to get the Title (Headline) first
+    final ogTitleMatch = RegExp(r'<meta\s+property="og:title"\s+content="([^"]*)"', caseSensitive: false).firstMatch(html);
+    if (ogTitleMatch != null && ogTitleMatch.group(1)!.isNotEmpty) {
+      return _cleanAndTruncate(_removeSiteSuffix(ogTitleMatch.group(1)!));
+    }
+
+    final titleMatch = RegExp(r'<title[^>]*>(.*?)</title>', caseSensitive: false, dotAll: true).firstMatch(html);
+    if (titleMatch != null && titleMatch.group(1)!.isNotEmpty) {
+      return _cleanAndTruncate(_removeSiteSuffix(titleMatch.group(1)!));
+    }
+
+    // 2. Fallback to Description
+    final ogDescMatch = RegExp(r'<meta\s+property="og:description"\s+content="([^"]*)"', caseSensitive: false).firstMatch(html);
+    if (ogDescMatch != null && ogDescMatch.group(1)!.isNotEmpty) {
+      return _cleanAndTruncate(ogDescMatch.group(1)!);
+    }
 
     final descMatch = RegExp(r'<meta\s+name="description"\s+content="([^"]*)"', caseSensitive: false).firstMatch(html);
-    if (descMatch != null && descMatch.group(1)!.isNotEmpty) return _truncate(descMatch.group(1)!);
+    if (descMatch != null && descMatch.group(1)!.isNotEmpty) {
+      return _cleanAndTruncate(descMatch.group(1)!);
+    }
 
-    final text = html.replaceAll(RegExp(r'<[^>]*>'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
-    return _truncate(text);
+    // 3. Last resort: First paragraph of text content
+    final bodyMatch = RegExp(r'<body[^>]*>(.*?)</body>', caseSensitive: false, dotAll: true).firstMatch(html);
+    if (bodyMatch != null) {
+      String bodyContent = bodyMatch.group(1)!;
+      bodyContent = bodyContent.replaceAll(RegExp(r'<script[^>]*>.*?</script>', caseSensitive: false, dotAll: true), '');
+      bodyContent = bodyContent.replaceAll(RegExp(r'<style[^>]*>.*?</style>', caseSensitive: false, dotAll: true), '');
+      String text = bodyContent.replaceAll(RegExp(r'<[^>]*>'), ' ');
+      text = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+
+      if (text.isNotEmpty) {
+        return _cleanAndTruncate(text);
+      }
+    }
+
+    return '';
   }
 
-  String _truncate(String text) {
-    if (text.length <= 80) return text;
-    return '${text.substring(0, 77)}...';
+  String _removeSiteSuffix(String text) {
+    final cleaned = text.replaceAll(RegExp(r'\s*[-|:]\s*.+$'), '').trim();
+    return cleaned;
+  }
+
+  String _cleanAndTruncate(String text) {
+    text = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (text.length <= 100) return text;
+    if (text.length > 80) {
+      return '${text.substring(0, 77)}...';
+    }
+    return text;
   }
 }
-
 
 // ================= MODELS =================
 class Post {
@@ -138,7 +324,6 @@ class RecentNote {
   }
 }
 
-
 // ================= STATE MANAGEMENT =================
 class AppData extends ChangeNotifier {
   List<Folder> folders = [];
@@ -161,7 +346,7 @@ class AppData extends ChangeNotifier {
       accessedAt: DateTime.now(),
     ));
     if (recentNotes.length > 9) recentNotes.removeLast();
-    
+
     await _saveRecentNotes();
     notifyListeners();
   }
@@ -169,13 +354,13 @@ class AppData extends ChangeNotifier {
   Future<void> init() async {
     if (_initialized) return;
     final prefs = await SharedPreferences.getInstance();
-    
+
     appName = prefs.getString('app_name') ?? 'darkslip';
     savePath = prefs.getString('save_path') ?? '/storage/emulated/0/Documents/darkslip';
-    
+
     expandedTiles.addAll(prefs.getStringList('expanded_tiles') ?? []);
     await _loadRecentNotes();
-    
+
     try {
       Directory(savePath).createSync(recursive: true);
       final testFile = File('$savePath/.write_test');
@@ -214,11 +399,11 @@ class AppData extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('save_path', newPath);
     savePath = newPath;
-    
+
     linkCache = LinkCache('$savePath/.link_cache.json');
     await linkCache.init();
     linkCache.addListener(() => notifyListeners());
-    
+
     await syncFromDisk();
     notifyListeners();
   }
@@ -260,18 +445,18 @@ class AppData extends ChangeNotifier {
     try {
       final dir = Directory(savePath);
       if (!await dir.exists()) return;
-      
+
       folders.clear();
       await for (var entity in dir.list()) {
         if (entity is Directory) {
           final folderName = entity.path.split(Platform.pathSeparator).last;
           final folder = Folder(id: 'f_$folderName', name: folderName);
-          
+
           await for (var sfEntity in entity.list()) {
             if (sfEntity is Directory) {
               final sfName = sfEntity.path.split(Platform.pathSeparator).last;
               final subFolder = SubFolder(id: 'sf_${folder.name}_$sfName', name: sfName);
-              
+
               await for (var noteEntity in sfEntity.list()) {
                 if (noteEntity is File && noteEntity.path.endsWith('.md')) {
                   final noteName = noteEntity.path.split(Platform.pathSeparator).last.replaceAll('.md', '');
@@ -323,17 +508,17 @@ class AppData extends ChangeNotifier {
 
       String content = await file.readAsString();
       final sections = content.split(RegExp(r'^\s*---\s*$', multiLine: true));
-      
+
       note.posts.clear();
       for (var i = 0; i < sections.length; i++) {
         var section = sections[i].trim();
         if (section.isEmpty) continue;
-        
+
         bool pinned = section.startsWith('<!-- PINNED -->');
         String cleanContent = pinned 
             ? section.replaceFirst(RegExp(r'^<!--\s*PINNED\s*-->\s*\n?', multiLine: true), '').trim() 
             : section;
-        
+
         note.posts.add(Post(
           id: '${DateTime.now().microsecondsSinceEpoch}_${i}',
           content: cleanContent,
@@ -422,7 +607,7 @@ class AppData extends ChangeNotifier {
       final newDir = Directory('$savePath/${folder.name}/${subFolder.name}');
       if (!await newDir.exists()) await newDir.create(recursive: true);
       final newPath = '${newDir.path}/$newName.md';
-      
+
       final oldFile = File(oldPath);
       if (await oldFile.exists()) await oldFile.rename(newPath);
       note.name = newName;
@@ -444,7 +629,6 @@ class AppData extends ChangeNotifier {
     notifyListeners();
   }
 }
-
 
 // ================= THEME =================
 ThemeData darkSlipTheme() => ThemeData(
@@ -469,7 +653,6 @@ ThemeData darkSlipTheme() => ThemeData(
     contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
   ),
 );
-
 
 // ================= SCREENS =================
 class HomeScreen extends StatelessWidget {
@@ -556,7 +739,7 @@ class HomeScreen extends StatelessWidget {
     return GestureDetector(
       onTap: () {
         final data = ctx.read<AppData>();
-        
+
         for (var f in data.folders) {
           if (f.name == recent.folderName) {
             for (var sf in f.subFolders) {
@@ -693,7 +876,7 @@ class HomeScreen extends StatelessWidget {
                               showDialog(context: ctx, builder: (_) => AlertDialog(
                                 backgroundColor: Colors.grey[900],
                                 title: const Text('Delete SubFolder?', style: TextStyle(color: Colors.white)),
-                                content: Text('This will permanently delete "${sf.name}" and its notes.', style: const TextStyle(color: Colors.white70)),
+                                content: Text('This will permanently delete "${sf.name}" and all its notes.', style: const TextStyle(color: Colors.white70)),
                                 actions: [
                                   TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
                                   TextButton(onPressed: () { data.deleteSubFolder(sf, folder); Navigator.pop(ctx); }, style: ButtonStyle(foregroundColor: WidgetStateProperty.all(Colors.red)), child: const Text('Delete')),
@@ -908,16 +1091,25 @@ class _NoteScreenState extends State<NoteScreen> {
     super.dispose();
   }
 
-  // ✅ FIXED: Uses replaceAllMapped (correct Dart API for RegExp callbacks)
+  /// Prepares markdown content by injecting link previews.
+  /// Short summaries (<60 chars) are treated as Titles (Bold).
+  /// Longer summaries are treated as Descriptions (Italic/Quote).
   String _prepareMarkdownWithSummaries(String content) {
     final cache = context.read<AppData>().linkCache;
     final urlRegex = RegExp(r'(https?://[^\s<>"{}|\\^`\[\]]+)');
+    
     return content.replaceAllMapped(urlRegex, (match) {
       final url = match.group(0)!;
       final summary = cache.getSummary(url);
-      if (summary != null) {
-        // Inject as markdown blockquote below the URL for clean rendering
-        return '$url\n> $summary';
+
+      if (summary != null && summary.isNotEmpty) {
+        // If the summary is short (< 60 chars), treat it as a Title (Bold)
+        // If longer, treat it as a Description (Standard Quote)
+        if (summary.length < 60) {
+          return '$url\n> **$summary**'; 
+        } else {
+          return '$url\n> $summary';
+        }
       }
       return url;
     });
@@ -1094,11 +1286,11 @@ class SettingsScreen extends StatelessWidget {
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   
-  // ✅ FIX: Shows top & bottom system bars permanently (no full-screen hiding)
+  // Shows top & bottom system bars permanently (no full-screen hiding)
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: [SystemUiOverlay.top, SystemUiOverlay.bottom]);
   
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
- 
+
   runApp(ChangeNotifierProvider(create: (_) => AppData()..init(), child: const DarkSlipApp()));
 }
 
