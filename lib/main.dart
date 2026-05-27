@@ -1173,9 +1173,9 @@ class _NoteScreenState extends State<NoteScreen> {
               padding: EdgeInsets.only(left: 8, right: 8, bottom: bottomPadding + 4),
               color: Colors.grey[900],
               child: Row(children: [
-                if (_editingPost != null)
+                                if (_editingPost != null)
                   IconButton(
-                    icon: const Icon(Icons.close, color: Colors.redAccent),
+                    icon: const Icon(Icons.close, color: Colors.white70),
                     onPressed: _cancelEdit,
                     tooltip: 'Cancel Edit',
                   ),
@@ -1191,9 +1191,9 @@ class _NoteScreenState extends State<NoteScreen> {
                     ),
                   ),
                 ),
-                if (_editingPost != null)
+                                if (_editingPost != null)
                   IconButton(
-                    icon: const Icon(Icons.check, color: Colors.green),
+                    icon: const Icon(Icons.check, color: Colors.white70),
                     onPressed: _saveOrAddPost,
                     tooltip: 'Save Edit',
                   )
