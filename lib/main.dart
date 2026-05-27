@@ -811,8 +811,75 @@ class _NoteScreenState extends State<NoteScreen> {
     }
   }
 
-  // Formatting Helpers
-  
+    // Formatting Helpers
+
+  /// Prepares markdown content for display. Preserves single newlines within
+  /// markdown tables (to keep table structure intact) while converting single
+  /// newlines to double newlines in regular text (for proper paragraph spacing).
+  String _prepareMarkdownContent(String content) {
+    final lines = content.split('\n');
+    final result = <String>[];
+    bool inTable = false;
+
+    for (int i = 0; i < lines.length; i++) {
+      final line = lines[i];
+      // A table line starts with | and contains at least one more |
+      final isTableLine = RegExp(r'^\s*\|.*\|\s*$').hasMatch(line);
+      // A table separator line like |---|---|
+      final isSeparatorLine = RegExp(r'^\s*\|[\s\-:|]+\|$').hasMatch(line);
+
+      if (isTableLine || isSeparatorLine) {
+        inTable = true;
+        result.add(line);
+      } else if (inTable && line.trim().isEmpty) {
+        // Blank line after table — end the table context
+        inTable = false;
+        result.add(''); // keep one blank line as paragraph separator
+      } else if (inTable) {
+        // We're inside a table but hit a non-table, non-blank line.
+        // This is unlikely but treat it as ending the table.
+        inTable = false;
+        result.add('');
+        result.add(line);
+      } else {
+        // Regular text — add extra blank line for paragraph spacing
+        if (line.isNotEmpty) {
+          result.add(line);
+          result.add('');
+        } else {
+          result.add('');
+        }
+      }
+    }
+
+    return result.join('\n');
+  }
+
+  void _insertTableBlock() {
+    final currentText = _controller.text;
+    final selection = _controller.selection;
+
+    const tableSyntax = '| Column 1 | Column 2 | Column 3 |\n|----------|----------|----------|\n| Cell 1   | Cell 2   | Cell 3   |';
+
+    String newText;
+    int newCursorPos;
+
+    if (selection.isCollapsed) {
+      newText = currentText.replaceRange(selection.baseOffset, selection.extentOffset, tableSyntax);
+      newCursorPos = selection.baseOffset + 14; // position cursor in "Column 1" area
+    } else {
+      newText = currentText.replaceRange(selection.start, selection.end, tableSyntax);
+      newCursorPos = selection.start + 14;
+    }
+
+    _controller.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(offset: newCursorPos),
+    );
+
+    FocusScope.of(context).requestFocus(FocusNode());
+  }
+
   void _insertCodeBlock() {
     final currentText = _controller.text;
     final selection = _controller.selection;
@@ -987,10 +1054,15 @@ class _NoteScreenState extends State<NoteScreen> {
             onPressed: _insertCodeBlock, 
             tooltip: 'Insert Code Block'
           ),
-          IconButton(
-            icon: const Icon(Icons.format_quote), 
-            onPressed: _insertQuoteBlock, 
+                              IconButton(
+            icon: const Icon(Icons.format_quote),
+            onPressed: _insertQuoteBlock,
             tooltip: 'Insert Quote/Highlight'
+          ),
+          IconButton(
+            icon: const Icon(Icons.table_chart),
+            onPressed: _insertTableBlock,
+            tooltip: 'Insert Table'
           ),
           IconButton(icon: const Icon(Icons.settings), onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen()))),
         ],
@@ -1076,11 +1148,13 @@ class _NoteScreenState extends State<NoteScreen> {
                   },
                 ),
               ]),
-              MarkdownBody(
-                data: post.content.replaceAll('\n', '\n\n'),
+                            MarkdownBody(
+                data: _prepareMarkdownContent(post.content),
                 styleSheet: MarkdownStyleSheet(
                   p: const TextStyle(height: 1.3),
                   a: const TextStyle(color: Colors.blueAccent, decoration: TextDecoration.underline),
+                                    tableBorder: TableBorder.all(color: Colors.white, width: 1),
+                  tableCellsPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   blockquoteDecoration: BoxDecoration(
                     border: Border(left: BorderSide(color: Colors.grey[700]!, width: 4)),
                     color: Colors.transparent,
