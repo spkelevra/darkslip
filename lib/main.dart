@@ -542,64 +542,84 @@ class HomeScreen extends StatelessWidget {
     });
   }
 
-  void _showRecentNotesDialog(BuildContext context) {
+        void _showRecentNotesDialog(BuildContext context) {
+    bool pasteToEnabled = false;
+    
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: Colors.grey[900],
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Recent Notes', style: TextStyle(color: Colors.white)),
-        content: SizedBox(
-          width: double.maxFinite,
-          height: 340,
-          child: Consumer<AppData>(
-            builder: (ctx, data, _) => GridView.count(
-              crossAxisCount: 3,
-              mainAxisSpacing: 10,
-              crossAxisSpacing: 10,
-              children: List.generate(9, (index) {
-                if (index < data.recentNotes.length) {
-                  final recent = data.recentNotes[index];
-                  return _buildRecentTile(recent, ctx);
-                } else {
-                  return Container(
-                    decoration: BoxDecoration(
-                      color: Colors.grey[850],
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.grey[700]!),
-                    ),
-                    child: const Center(child: Text('Empty', style: TextStyle(color: Colors.grey, fontSize: 12))),
-                  );
-                }
-              }),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          backgroundColor: Colors.grey[900],
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text('Recent Notes', style: TextStyle(color: Colors.white)),
+                    content: SizedBox(
+            width: double.maxFinite,
+            height: 370,
+            child: Consumer<AppData>(
+              builder: (ctx, data, _) => GridView.count(
+                crossAxisCount: 3,
+                mainAxisSpacing: 10,
+                crossAxisSpacing: 10,
+                children: List.generate(9, (index) {
+                  if (index < data.recentNotes.length) {
+                    final recent = data.recentNotes[index];
+                    return _buildRecentTile(recent, ctx, pasteToEnabled);
+                  } else {
+                    return Container(
+                      decoration: BoxDecoration(
+                        color: Colors.grey[850],
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.grey[700]!),
+                      ),
+                      child: const Center(child: Text('Empty', style: TextStyle(color: Colors.grey, fontSize: 12))),
+                    );
+                  }
+                }),
+              ),
             ),
           ),
+          actions: [
+            Row(
+              children: [
+                Checkbox(
+                  value: pasteToEnabled,
+                  activeColor: Colors.white70,
+                  checkColor: Colors.grey[900],
+                  onChanged: (val) {
+                    pasteToEnabled = val ?? false;
+                    setDialogState(() {});
+                  },
+                ),
+                const Text('Paste To', style: TextStyle(color: Colors.white70)),
+              ],
+            ),
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
+          ],
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
-        ],
       ),
     );
   }
 
-    Widget _buildRecentTile(RecentNote recent, BuildContext ctx) {
+        Widget _buildRecentTile(RecentNote recent, BuildContext ctx, bool pasteToEnabled) {
     return GestureDetector(
-      onTap: () {
+      onTap: () async {
         final data = ctx.read<AppData>();
 
         // Find the note in the current state to navigate
         for (var f in data.folders) {
           if (f.name == recent.folderName) {
+            Note? foundNote;
+            SubFolder? foundSubFolder;
+
             // If subFolder is specified, search there
             if (recent.subFolderName != null) {
               for (var sf in f.subFolders) {
                 if (sf.name == recent.subFolderName) {
                   for (var n in sf.notes) {
                     if (n.id == recent.noteId) {
-                      Navigator.pop(ctx);
-                      data.addRecentNote(f.name, sf.name, n.id, n.name);
-                      Navigator.push(ctx, MaterialPageRoute(builder: (_) => NoteScreen(folder: f, subFolder: sf, note: n)));
-                      return;
+                      foundNote = n;
+                      foundSubFolder = sf;
+                      break;
                     }
                   }
                 }
@@ -608,13 +628,37 @@ class HomeScreen extends StatelessWidget {
               // Search in folder-level notes
               for (var n in f.notes) {
                 if (n.id == recent.noteId) {
-                  Navigator.pop(ctx);
-                  data.addRecentNote(f.name, null, n.id, n.name);
-                  Navigator.push(ctx, MaterialPageRoute(builder: (_) => NoteScreen(folder: f, note: n)));
-                  return;
+                  foundNote = n;
+                  break;
                 }
               }
             }
+
+                        if (foundNote != null) {
+                          final note = foundNote; // Non-null assertion within the block
+                          Navigator.pop(ctx);
+                          data.addRecentNote(f.name, foundSubFolder?.name, note.id, note.name);
+
+                          // If paste to is enabled, paste clipboard content first
+                          if (pasteToEnabled) {
+                            final clipboardData = await Clipboard.getData(Clipboard.kTextPlain);
+                            final clipboardText = clipboardData?.text;
+                            if (clipboardText != null && clipboardText.isNotEmpty) {
+                              final post = Post(
+                                id: DateTime.now().microsecondsSinceEpoch.toString(),
+                                content: clipboardText,
+                                createdAt: DateTime.now(),
+                              );
+                              note.posts.insert(0, post);
+                              await data.saveNote(note, foundSubFolder, f);
+                            }
+                          }
+
+                          if (ctx.mounted) {
+                            Navigator.push(ctx, MaterialPageRoute(builder: (_) => NoteScreen(folder: f, subFolder: foundSubFolder, note: note)));
+                          }
+                          return;
+                        }
           }
         }
       },
