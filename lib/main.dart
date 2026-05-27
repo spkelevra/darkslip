@@ -89,10 +89,15 @@ class AppData extends ChangeNotifier {
   String appName = 'darkslip';
   Set<String> expandedTiles = {};
   bool _initialized = false;
+  bool _storageReady = false;
+  bool _onboardingCompleted = false;
   String? _lastError;
 
   // Recent Notes Tracking
   List<RecentNote> recentNotes = [];
+
+  bool get storageReady => _storageReady;
+  bool get onboardingCompleted => _onboardingCompleted;
 
     Future<void> addRecentNote(
       String folderName, String? subFolderName, String noteId, String noteName) async {
@@ -112,7 +117,20 @@ class AppData extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> init() async {
+    Future<bool> _checkStorageAccess() async {
+    try {
+      Directory(savePath).createSync(recursive: true);
+      final testFile = File('$savePath/.write_test');
+      await testFile.writeAsString('ok');
+      await testFile.delete();
+      return true;
+    } catch (e) {
+      _lastError = 'Storage not accessible.';
+      return false;
+    }
+  }
+
+    Future<void> init() async {
     if (_initialized) return;
     final prefs = await SharedPreferences.getInstance();
 
@@ -124,25 +142,40 @@ class AppData extends ChangeNotifier {
     
     await _loadRecentNotes();
 
-    try {
-      Directory(savePath).createSync(recursive: true);
-      final testFile = File('$savePath/.write_test');
-      await testFile.writeAsString('ok');
-      await testFile.delete();
-    } catch (e) {
-      _lastError = 'Storage not accessible. Go to Settings > Apps > darkslip > Permissions > Files & Media > Select "All files access"';
-    }
+    // Check if user has completed onboarding before
+    _onboardingCompleted = prefs.getBool('onboarding_completed') ?? false;
 
-    await syncFromDisk();
+    _storageReady = await _checkStorageAccess();
+
+    if (_storageReady) {
+      await syncFromDisk();
+    }
     _initialized = true;
     notifyListeners();
   }
 
-  Future<void> requestStoragePermission() async {
+  Future<void> completeOnboarding() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('onboarding_completed', true);
+    _onboardingCompleted = true;
+    notifyListeners();
+  }
+
+  Future<void> retryStorageInit() async {
+    _storageReady = await _checkStorageAccess();
+    if (_storageReady) {
+      await syncFromDisk();
+    }
+    notifyListeners();
+  }
+
+    Future<void> requestStoragePermission() async {
     try {
       final status = await Permission.manageExternalStorage.request();
       if (status.isGranted) {
         _lastError = null;
+        // Retry storage check after permission granted
+        await retryStorageInit();
       } else if (status.isDenied) {
         _lastError = 'Storage permission denied. Please grant access in Settings.';
       } else if (status.isPermanentlyDenied) {
@@ -1247,19 +1280,6 @@ class SettingsScreen extends StatelessWidget {
             controller: TextEditingController(text: data.savePath),
             onSubmitted: (val) => data.updateSavePath(val.trim()),
           ),
-          const SizedBox(height: 16),
-          ElevatedButton.icon(
-            onPressed: () async {
-              await data.requestStoragePermission();
-              if (context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text(data._lastError ?? 'Permission granted, RESTART APP! Saving to /Documents/darkslip')),
-                );
-              }
-            },
-            icon: const Icon(Icons.security),
-            label: const Text('Grant Storage Access'),
-          ),
           const SizedBox(height: 24),
           const Text(
             '• Files are saved to /Documents/darkslip by default\n'
@@ -1267,6 +1287,163 @@ class SettingsScreen extends StatelessWidget {
             style: TextStyle(color: Colors.grey, height: 1.5),
           ),
         ]),
+      ),
+    );
+  }
+}
+
+class OnboardingScreen extends StatelessWidget {
+  const OnboardingScreen({super.key});
+
+  void _showPermissionGuide(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: Colors.grey[900],
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('How to Grant Access', style: TextStyle(color: Colors.white)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: const [
+            Text('Follow these steps:', style: TextStyle(color: Colors.white70, fontSize: 16)),
+            SizedBox(height: 12),
+            Text('1. Open Android Settings', style: TextStyle(color: Colors.white70)),
+            Text('2. Go to Apps > darkslip', style: TextStyle(color: Colors.white70)),
+            Text('3. Tap Permissions', style: TextStyle(color: Colors.white70)),
+            Text('4. Select "Files & Media"', style: TextStyle(color: Colors.white70)),
+            Text('5. Choose "All files access"', style: TextStyle(color: Colors.white70)),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Got it')),
+        ],
+      ),
+    );
+  }
+
+    @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Consumer<AppData>(
+        builder: (ctx, data, _) {
+          if (data.onboardingCompleted) {
+            // Onboarding done, navigate to home
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              Navigator.of(ctx).pushReplacement(
+                MaterialPageRoute(builder: (_) => const HomeScreen()),
+              );
+            });
+            return Container();
+          }
+
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(24.0),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  // Icon
+                  Icon(
+                    Icons.drive_folder_upload_rounded,
+                    size: 120,
+                    color: Colors.grey[600],
+                  ),
+                  const SizedBox(height: 32),
+
+                  // Title
+                  const Text(
+                    'Welcome to darkslip',
+                    style: TextStyle(
+                      fontSize: 28,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+
+                  // Description
+                  Text(
+                    'darkslip saves your notes as markdown files on your device. To get started, we need storage access.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 16, color: Colors.grey[400]),
+                  ),
+                  const SizedBox(height: 48),
+
+                                    // Primary action button
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () async {
+                        await data.requestStoragePermission();
+                        await data.completeOnboarding();
+                      },
+                      icon: const Icon(Icons.security),
+                      label: const Text('Grant Storage Access', style: TextStyle(fontSize: 16)),
+                      style: ElevatedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        backgroundColor: Colors.white,
+                        foregroundColor: Colors.black87,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+
+                  // Retry button - check if storage was granted externally
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: () async {
+                        await data.retryStorageInit();
+                        await data.completeOnboarding();
+                      },
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Check Again', style: TextStyle(fontSize: 16)),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        side: BorderSide(color: Colors.grey[700]!),
+                        foregroundColor: Colors.white70,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 48),
+
+                  // Info card
+                  Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.grey[850],
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.grey[700]!),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: const [
+                            Icon(Icons.info_outline, size: 20, color: Colors.blue),
+                            SizedBox(width: 8),
+                            Text(
+                              'Why is this needed?',
+                              style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white70),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'Your notes are stored as plain .md files in /Documents/darkslip. This means your data is always accessible, even after reinstalling the app.',
+                          style: TextStyle(color: Colors.grey, height: 1.5),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -1288,6 +1465,18 @@ class DarkSlipApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(title: 'darkslip', debugShowCheckedModeBanner: false, theme: darkSlipTheme(), home: const HomeScreen());
+    return MaterialApp(
+      title: 'darkslip',
+      debugShowCheckedModeBanner: false,
+      theme: darkSlipTheme(),
+      home: Consumer<AppData>(
+        builder: (ctx, data, _) {
+          if (!data.onboardingCompleted) {
+            return const OnboardingScreen();
+          }
+          return const HomeScreen();
+        },
+      ),
+    );
   }
 }
