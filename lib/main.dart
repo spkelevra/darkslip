@@ -933,18 +933,21 @@ class _NoteScreenState extends State<NoteScreen> {
     return result.join('\n');
   }
 
-  void _insertTableBlock() {
+    void _insertTableBlock() {
     final currentText = _controller.text;
     final selection = _controller.selection;
 
     const tableSyntax = '| Column 1 | Column 2 | Column 3 |\n|----------|----------|----------|\n| Cell 1   | Cell 2   | Cell 3   |';
 
+    // Use the valid cursor position, defaulting to end of text if selection is invalid (-1)
+    final insertPos = selection.isValid ? selection.start : currentText.length;
+
     String newText;
     int newCursorPos;
 
     if (selection.isCollapsed) {
-      newText = currentText.replaceRange(selection.baseOffset, selection.extentOffset, tableSyntax);
-      newCursorPos = selection.baseOffset + 14; // position cursor in "Column 1" area
+      newText = currentText.replaceRange(insertPos, insertPos, tableSyntax);
+      newCursorPos = insertPos + 14; // position cursor in "Column 1" area
     } else {
       newText = currentText.replaceRange(selection.start, selection.end, tableSyntax);
       newCursorPos = selection.start + 14;
@@ -958,18 +961,21 @@ class _NoteScreenState extends State<NoteScreen> {
     FocusScope.of(context).requestFocus(FocusNode());
   }
 
-  void _insertCodeBlock() {
+    void _insertCodeBlock() {
     final currentText = _controller.text;
     final selection = _controller.selection;
-    
+
     const codeBlockSyntax = '```\n\n```';
-    
+
+    // Use the valid cursor position, defaulting to end of text if selection is invalid (-1)
+    final insertPos = selection.isValid ? selection.start : currentText.length;
+
     String newText;
     int newCursorPos;
 
     if (selection.isCollapsed) {
-      newText = currentText.replaceRange(selection.baseOffset, selection.extentOffset, codeBlockSyntax);
-      newCursorPos = selection.baseOffset + 4; 
+      newText = currentText.replaceRange(insertPos, insertPos, codeBlockSyntax);
+      newCursorPos = insertPos + 4;
     } else {
       final selectedText = currentText.substring(selection.start, selection.end);
       newText = currentText.replaceRange(selection.start, selection.end, '```\n$selectedText\n```');
@@ -980,35 +986,38 @@ class _NoteScreenState extends State<NoteScreen> {
       text: newText,
       selection: TextSelection.collapsed(offset: newCursorPos),
     );
-    
-    FocusScope.of(context).requestFocus(FocusNode()); 
+
+    FocusScope.of(context).requestFocus(FocusNode());
   }
 
-  void _insertQuoteBlock() {
+    void _insertQuoteBlock() {
     final currentText = _controller.text;
     final selection = _controller.selection;
-    
+
+    // Use the valid cursor position, defaulting to end of text if selection is invalid (-1)
+    final insertPos = selection.isValid ? selection.start : currentText.length;
+
     String newText;
     int newCursorPos;
 
     if (selection.isCollapsed) {
       const quoteSyntax = '> ';
-      newText = currentText.replaceRange(selection.baseOffset, selection.extentOffset, quoteSyntax);
-      newCursorPos = selection.baseOffset + 2; 
+      newText = currentText.replaceRange(insertPos, insertPos, quoteSyntax);
+      newCursorPos = insertPos + 2;
     } else {
       final selectedText = currentText.substring(selection.start, selection.end);
       final quotedLines = selectedText.split('\n').map((line) => '> $line').join('\n');
-      
+
       newText = currentText.replaceRange(selection.start, selection.end, quotedLines);
-      newCursorPos = selection.start + 2; 
+      newCursorPos = selection.start + 2;
     }
 
     _controller.value = TextEditingValue(
       text: newText,
       selection: TextSelection.collapsed(offset: newCursorPos),
     );
-    
-    FocusScope.of(context).requestFocus(FocusNode()); 
+
+    FocusScope.of(context).requestFocus(FocusNode());
   }
 
   void _addPost() {
@@ -1295,32 +1304,7 @@ class SettingsScreen extends StatelessWidget {
 class OnboardingScreen extends StatelessWidget {
   const OnboardingScreen({super.key});
 
-  void _showPermissionGuide(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: Colors.grey[900],
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('How to Grant Access', style: TextStyle(color: Colors.white)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: const [
-            Text('Follow these steps:', style: TextStyle(color: Colors.white70, fontSize: 16)),
-            SizedBox(height: 12),
-            Text('1. Open Android Settings', style: TextStyle(color: Colors.white70)),
-            Text('2. Go to Apps > darkslip', style: TextStyle(color: Colors.white70)),
-            Text('3. Tap Permissions', style: TextStyle(color: Colors.white70)),
-            Text('4. Select "Files & Media"', style: TextStyle(color: Colors.white70)),
-            Text('5. Choose "All files access"', style: TextStyle(color: Colors.white70)),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Got it')),
-        ],
-      ),
-    );
-  }
+  
 
     @override
   Widget build(BuildContext context) {
