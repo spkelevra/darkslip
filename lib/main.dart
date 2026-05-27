@@ -860,6 +860,8 @@ class _NoteScreenState extends State<NoteScreen> {
   final ScrollController _scrollController = ScrollController();
   String? _highlightedPostId;
   Timer? _highlightTimer;
+  Post? _editingPost; // Tracks which post is being edited inline
+
 
   @override
   void initState() {
@@ -1020,23 +1022,31 @@ class _NoteScreenState extends State<NoteScreen> {
     FocusScope.of(context).requestFocus(FocusNode());
   }
 
-  void _addPost() {
+    void _saveOrAddPost() {
     final text = _controller.text.trim();
     if (text.isEmpty) return;
-    
-    final post = Post(
-      id: DateTime.now().microsecondsSinceEpoch.toString(), 
-      content: text, 
-      createdAt: DateTime.now()
-    );
-    
-    widget.note.posts.insert(0, post);
+
+    if (_editingPost != null) {
+      // Saving an edit to an existing post
+      context.read<AppData>().updatePostContent(_editingPost!, text);
+      context.read<AppData>().saveNote(widget.note, widget.subFolder, widget.folder);
+      _editingPost = null;
+    } else {
+      // Adding a new post
+      final post = Post(
+        id: DateTime.now().microsecondsSinceEpoch.toString(),
+        content: text,
+        createdAt: DateTime.now()
+      );
+      widget.note.posts.insert(0, post);
+      context.read<AppData>().saveNote(widget.note, widget.subFolder, widget.folder);
+    }
+
     _controller.clear();
-    FocusScope.of(context).unfocus(); 
-    
-    if (mounted) setState(() {}); 
-    context.read<AppData>().saveNote(widget.note, widget.subFolder, widget.folder);
-    
+    FocusScope.of(context).unfocus();
+
+    if (mounted) setState(() {});
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
         _scrollController.jumpTo(0);
@@ -1044,28 +1054,20 @@ class _NoteScreenState extends State<NoteScreen> {
     });
   }
 
+  void _cancelEdit() {
+    _controller.clear();
+    _editingPost = null;
+    FocusScope.of(context).unfocus();
+    if (mounted) setState(() {});
+  }
+
   void _editPost(Post post) {
-    final ctrl = TextEditingController(text: post.content);
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: Colors.grey[900],
-        title: const Text('Edit Post', style: TextStyle(color: Colors.white)),
-        content: TextField(controller: ctrl, maxLines: 6, decoration: const InputDecoration(hintText: 'Markdown supported')),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-          TextButton(
-            onPressed: () {
-              context.read<AppData>().updatePostContent(post, ctrl.text.trim());
-              context.read<AppData>().saveNote(widget.note, widget.subFolder, widget.folder);
-              if (mounted) setState(() {});
-              Navigator.pop(context);
-            },
-            child: const Text('Save'),
-          ),
-        ],
-      ),
-    );
+    // Populate the text field with the post content for inline editing
+    _controller.text = post.content;
+    _controller.selection = TextSelection.collapsed(offset: _controller.text.length);
+    _editingPost = post;
+    FocusScope.of(context).requestFocus(FocusNode());
+    if (mounted) setState(() {});
   }
 
   void _jumpToAndHighlight(Post post) {
@@ -1165,12 +1167,18 @@ class _NoteScreenState extends State<NoteScreen> {
               itemBuilder: (_, i) => _buildPostItem(widget.note.posts[i]),
             ),
           ),
-          SafeArea(
+                    SafeArea(
             top: false,
             child: Container(
               padding: EdgeInsets.only(left: 8, right: 8, bottom: bottomPadding + 4),
               color: Colors.grey[900],
               child: Row(children: [
+                if (_editingPost != null)
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.redAccent),
+                    onPressed: _cancelEdit,
+                    tooltip: 'Cancel Edit',
+                  ),
                 Expanded(
                   child: TextField(
                     controller: _controller,
@@ -1178,10 +1186,19 @@ class _NoteScreenState extends State<NoteScreen> {
                     minLines: 1,
                     keyboardType: TextInputType.multiline,
                     textInputAction: TextInputAction.newline,
-                    decoration: const InputDecoration(hintText: 'Type a note...'),
+                    decoration: InputDecoration(
+                      hintText: _editingPost != null ? 'Editing post...' : 'Type a note...',
+                    ),
                   ),
                 ),
-                IconButton(icon: const Icon(Icons.send, color: Colors.white70), onPressed: _addPost),
+                if (_editingPost != null)
+                  IconButton(
+                    icon: const Icon(Icons.check, color: Colors.green),
+                    onPressed: _saveOrAddPost,
+                    tooltip: 'Save Edit',
+                  )
+                else
+                  IconButton(icon: const Icon(Icons.send, color: Colors.white70), onPressed: _saveOrAddPost),
               ]),
             ),
           ),
