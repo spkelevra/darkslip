@@ -28,3 +28,7 @@ Notes: Posted in individual isolated chat boxes, with pin options.
 - Hold a note segment to edit
 - Tap a segment to copy
 - Supports hyperlink redirecting to default browser
+
+## Support
+- If you dig it, support always rocks!
+[![Buy Me a Coffee](https://shields.io)](https://ko-fi.com/spkelevra)
