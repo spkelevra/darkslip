@@ -12,7 +12,7 @@ Android: Installed the APK > Go to Settings > Enable Storage permissions > Force
 ## Usage
 
 Main Menu:
-- Recent notes: 3x3 grid showing recently accessed notes in order, saves between sessins
+- Recent notes: 3x3 grid showing recently accessed notes in order, saves between sessions
 - Refresh: Refresh the directory. Useful if markdown notes are added from another source into a sub-folder
 - Add Folder: Creates new base folder
 - Settings: Currently only for enabling storage
@@ -22,8 +22,9 @@ Base Folder/Sub Folder/Note structure: Create a base folder (Top Right Folder ic
 - Holding a Base Folder/Sub Folder brings up rename/delete option
 
 Notes: Posted in individual isolated chat boxes, with pin options.
-- Swipe left to delete. Can quickly tap and swipe right to cancel the delete action
-- Pin: Each note segment can be pinned. Pins can be accessed from the top-right menu
+- Swipe left to delete. Can quickly tap and swipe right to cancel the delete action. Can multi-select.
+- Pin buttons: Each note segment can be pinned from the icon in the segment. Pins can be accessed from the top-right menu button.
+- Quote and Code format buttons
 - Hold a note segment to edit
 - Tap a segment to copy
 - Supports hyperlink redirecting to default browser
