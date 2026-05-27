@@ -1148,12 +1148,11 @@ class _NoteScreenState extends State<NoteScreen> {
             onPressed: _insertQuoteBlock,
             tooltip: 'Insert Quote/Highlight'
           ),
-          IconButton(
+                    IconButton(
             icon: const Icon(Icons.table_chart),
             onPressed: _insertTableBlock,
             tooltip: 'Insert Table'
           ),
-          IconButton(icon: const Icon(Icons.settings), onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen()))),
         ],
       ),
       body: Column(
@@ -1167,11 +1166,12 @@ class _NoteScreenState extends State<NoteScreen> {
               itemBuilder: (_, i) => _buildPostItem(widget.note.posts[i]),
             ),
           ),
-                    SafeArea(
+                              SafeArea(
             top: false,
             child: Container(
               padding: EdgeInsets.only(left: 8, right: 8, bottom: bottomPadding + 4),
               color: Colors.grey[900],
+              constraints: const BoxConstraints(maxHeight: 250),
               child: Row(children: [
                                 if (_editingPost != null)
                   IconButton(
