@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -9,267 +8,20 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-// ================= LINK CACHE (Zero External Dependencies) =================
-class LinkCache extends ChangeNotifier {
-  final String _cachePath;
-  Map<String, String> _cache = {};
-
-  LinkCache(this._cachePath);
-
-  Future<void> init() async {
-    try {
-      final file = File(_cachePath);
-      if (await file.exists()) {
-        final json = jsonDecode(await file.readAsString());
-        _cache = Map<String, String>.from(json);
-      }
-    } catch (_) {}
-  }
-
-  Future<void> _save() async {
-    try {
-      await File(_cachePath).writeAsString(jsonEncode(_cache));
-    } catch (_) {}
-  }
-
-  String? getSummary(String url) => _cache[url];
-
-  /// Fetches & caches summary if missing. Uses built-in dart:io (no pub dependency)
-  Future<void> ensureCached(String url) async {
-    if (_cache.containsKey(url)) return;
-
-    try {
-      final client = HttpClient();
-      client.userAgent = 'Mozilla/5.0 (compatible; DarkSlip/1.0)';
-
-      // Handle redirects to get the real URL for better parsing
-      Uri uri = Uri.parse(url);
-
-      // Special handling for Google Maps Short Links
-      if (uri.host.contains('maps.app.goo.gl') || uri.host.contains('goo.gl')) {
-        final request = await client.getUrl(uri).timeout(const Duration(seconds: 4));
-        final response = await request.close();
-
-        // Follow redirect to get the actual maps.google.com URL
-        if (response.statusCode == 301 || response.statusCode == 302) {
-          String? location = response.headers.value('location');
-          if (location != null) {
-            uri = Uri.parse(location);
-          }
-        } else {
-          // If no redirect, try to parse the short link page itself (rarely works for maps)
-          return;
-        }
-      }
-
-      final request = await client.getUrl(uri).timeout(const Duration(seconds: 4));
-      final response = await request.close();
-
-      if (response.statusCode == 200) {
-        String html = await response.transform(utf8.decoder).join();
-
-        // Try Special Handlers first for known problematic sites
-        String? specialSummary = _handleSpecialSites(uri, html);
-
-        if (specialSummary != null && specialSummary.isNotEmpty) {
-          _cache[url] = specialSummary;
-        } else {
-          // Fallback to generic meta tag extraction
-          String summary = _extractDescription(html);
-          if (summary.isNotEmpty) {
-            _cache[url] = summary;
-          }
-        }
-
-        await _save();
-        notifyListeners();
-      }
-    } catch (_) {}
-  }
-
-  /// Handles sites that don't use standard meta tags or require specific parsing
-  String? _handleSpecialSites(Uri uri, String html) {
-    final host = uri.host.toLowerCase();
-
-    // --- GOOGLE MAPS ---
-    if (host.contains('maps.google')) {
-      return _parseGoogleMaps(html);
-    }
-
-    // --- YOUTUBE ---
-    if (host.contains('youtube.com') || host.contains('youtu.be')) {
-      return _parseYouTube(html);
-    }
-
-    // --- TWITTER / X ---
-    if (host.contains('twitter.com') || host.contains('x.com')) {
-      return _parseTwitter(html);
-    }
-
-    // --- REDDIT ---
-    if (host.contains('reddit.com')) {
-      return _parseReddit(html);
-    }
-
-    return null;
-  }
-
-  /// Extracts Place Name and Address from Google Maps HTML
-  String? _parseGoogleMaps(String html) {
-    try {
-      // Look for the "place" object in the JSON-LD or script tags
-      // Common pattern: "name":"The Westin Peachtree Plaza", ... "address":"..."
-
-      // Try to find the title from og:title first (sometimes present on full maps links)
-      final ogTitle = RegExp(r'<meta\s+property="og:title"\s+content="([^"]*)"', caseSensitive: false).firstMatch(html);
-      if (ogTitle != null && ogTitle.group(1)!.isNotEmpty) {
-        return _cleanAndTruncate(_removeSiteSuffix(ogTitle.group(1)!));
-      }
-
-      // Try to find the place name in script tags containing "place" data
-      // This regex looks for a JSON-like structure often found in Maps scripts
-      final placeMatch = RegExp(r'"name"\s*:\s*"([^"]+)"', caseSensitive: false).firstMatch(html);
-
-      if (placeMatch != null) {
-        String name = placeMatch.group(1)!;
-
-        // Try to find address nearby
-        final addrMatch = RegExp(r'"address"\s*:\s*"([^"]+)"', caseSensitive: false).firstMatch(html);
-        String? address = addrMatch?.group(1);
-
-        if (address != null && address.isNotEmpty) {
-          return _cleanAndTruncate('$name · $address');
-        } else {
-          return _cleanAndTruncate(name);
-        }
-      }
-
-      // Fallback: Look for h1 or title tag which might contain the place name
-      final titleMatch = RegExp(r'<title[^>]*>(.*?)</title>', caseSensitive: false).firstMatch(html);
-      if (titleMatch != null) {
-        return _cleanAndTruncate(_removeSiteSuffix(titleMatch.group(1)!));
-      }
-
-    } catch (_) {}
-    return null;
-  }
-
-  /// Extracts Video Title from YouTube
-  String? _parseYouTube(String html) {
-    try {
-      final titleMatch = RegExp(r'<title[^>]*>(.*?)</title>', caseSensitive: false).firstMatch(html);
-      if (titleMatch != null) {
-        return _cleanAndTruncate(_removeSiteSuffix(titleMatch.group(1)!));
-      }
-
-      // Fallback to og:title
-      final ogTitle = RegExp(r'<meta\s+property="og:title"\s+content="([^"]*)"', caseSensitive: false).firstMatch(html);
-      if (ogTitle != null) {
-        return _cleanAndTruncate(ogTitle.group(1)!);
-      }
-    } catch (_) {}
-    return null;
-  }
-
-  /// Extracts Tweet Text from Twitter/X
-  String? _parseTwitter(String html) {
-    try {
-      // Twitter embeds tweet text in a script tag with id="initial-tweets" or similar JSON
-      final tweetMatch = RegExp(r'"text"\s*:\s*"([^"]+)"', caseSensitive: false).firstMatch(html);
-      if (tweetMatch != null) {
-        return _cleanAndTruncate(tweetMatch.group(1)!);
-      }
-
-      // Fallback to og:description
-      final desc = RegExp(r'<meta\s+property="og:description"\s+content="([^"]*)"', caseSensitive: false).firstMatch(html);
-      if (desc != null) {
-        return _cleanAndTruncate(desc.group(1)!);
-      }
-    } catch (_) {}
-    return null;
-  }
-
-  /// Extracts Post Title from Reddit
-  String? _parseReddit(String html) {
-    try {
-      final titleMatch = RegExp(r'<title[^>]*>(.*?)</title>', caseSensitive: false).firstMatch(html);
-      if (titleMatch != null) {
-        return _cleanAndTruncate(_removeSiteSuffix(titleMatch.group(1)!));
-      }
-
-      // Fallback to og:title
-      final ogTitle = RegExp(r'<meta\s+property="og:title"\s+content="([^"]*)"', caseSensitive: false).firstMatch(html);
-      if (ogTitle != null) {
-        return _cleanAndTruncate(ogTitle.group(1)!);
-      }
-    } catch (_) {}
-    return null;
-  }
-
-  /// Generic extraction for standard websites
-  String _extractDescription(String html) {
-    // 1. Try to get the Title (Headline) first
-    final ogTitleMatch = RegExp(r'<meta\s+property="og:title"\s+content="([^"]*)"', caseSensitive: false).firstMatch(html);
-    if (ogTitleMatch != null && ogTitleMatch.group(1)!.isNotEmpty) {
-      return _cleanAndTruncate(_removeSiteSuffix(ogTitleMatch.group(1)!));
-    }
-
-    final titleMatch = RegExp(r'<title[^>]*>(.*?)</title>', caseSensitive: false, dotAll: true).firstMatch(html);
-    if (titleMatch != null && titleMatch.group(1)!.isNotEmpty) {
-      return _cleanAndTruncate(_removeSiteSuffix(titleMatch.group(1)!));
-    }
-
-    // 2. Fallback to Description
-    final ogDescMatch = RegExp(r'<meta\s+property="og:description"\s+content="([^"]*)"', caseSensitive: false).firstMatch(html);
-    if (ogDescMatch != null && ogDescMatch.group(1)!.isNotEmpty) {
-      return _cleanAndTruncate(ogDescMatch.group(1)!);
-    }
-
-    final descMatch = RegExp(r'<meta\s+name="description"\s+content="([^"]*)"', caseSensitive: false).firstMatch(html);
-    if (descMatch != null && descMatch.group(1)!.isNotEmpty) {
-      return _cleanAndTruncate(descMatch.group(1)!);
-    }
-
-    // 3. Last resort: First paragraph of text content
-    final bodyMatch = RegExp(r'<body[^>]*>(.*?)</body>', caseSensitive: false, dotAll: true).firstMatch(html);
-    if (bodyMatch != null) {
-      String bodyContent = bodyMatch.group(1)!;
-      bodyContent = bodyContent.replaceAll(RegExp(r'<script[^>]*>.*?</script>', caseSensitive: false, dotAll: true), '');
-      bodyContent = bodyContent.replaceAll(RegExp(r'<style[^>]*>.*?</style>', caseSensitive: false, dotAll: true), '');
-      String text = bodyContent.replaceAll(RegExp(r'<[^>]*>'), ' ');
-      text = text.replaceAll(RegExp(r'\s+'), ' ').trim();
-
-      if (text.isNotEmpty) {
-        return _cleanAndTruncate(text);
-      }
-    }
-
-    return '';
-  }
-
-  String _removeSiteSuffix(String text) {
-    final cleaned = text.replaceAll(RegExp(r'\s*[-|:]\s*.+$'), '').trim();
-    return cleaned;
-  }
-
-  String _cleanAndTruncate(String text) {
-    text = text.replaceAll(RegExp(r'\s+'), ' ').trim();
-    if (text.length <= 100) return text;
-    if (text.length > 80) {
-      return '${text.substring(0, 77)}...';
-    }
-    return text;
-  }
-}
-
 // ================= MODELS =================
+
 class Post {
   final String id;
   String content;
   final DateTime createdAt;
   bool isPinned;
 
-  Post({required this.id, required this.content, required this.createdAt, this.isPinned = false});
+  Post({
+    required this.id,
+    required this.content,
+    required this.createdAt,
+    this.isPinned = false,
+  });
 }
 
 class Note {
@@ -281,7 +33,7 @@ class Note {
 }
 
 class SubFolder {
-  String id;
+  String id; // Mutable to allow ID updates on rename
   String name;
   List<Note> notes = [];
 
@@ -289,13 +41,14 @@ class SubFolder {
 }
 
 class Folder {
-  String id;
+  String id; // Mutable to allow ID updates on rename
   String name;
   List<SubFolder> subFolders = [];
 
   Folder({required this.id, required this.name});
 }
 
+// Recent Note Model for tracking history
 class RecentNote {
   final String folderName;
   final String subFolderName;
@@ -311,20 +64,24 @@ class RecentNote {
     required this.accessedAt,
   });
 
+  // Serialization methods
   String toJson() => '$folderName|$subFolderName|$noteId|$noteName|$accessedAt';
 
   factory RecentNote.fromJson(String json) {
     final parts = json.split('|');
     if (parts.length != 5) throw FormatException('Invalid format');
     return RecentNote(
-      folderName: parts[0], subFolderName: parts[1],
-      noteId: parts[2], noteName: parts[3],
+      folderName: parts[0],
+      subFolderName: parts[1],
+      noteId: parts[2],
+      noteName: parts[3],
       accessedAt: DateTime.parse(parts[4]),
     );
   }
 }
 
 // ================= STATE MANAGEMENT =================
+
 class AppData extends ChangeNotifier {
   List<Folder> folders = [];
   String savePath = '';
@@ -333,10 +90,11 @@ class AppData extends ChangeNotifier {
   bool _initialized = false;
   String? _lastError;
 
-  late LinkCache linkCache;
+  // Recent Notes Tracking
   List<RecentNote> recentNotes = [];
 
-  Future<void> addRecentNote(String folderName, String subFolderName, String noteId, String noteName) async {
+  Future<void> addRecentNote(
+      String folderName, String subFolderName, String noteId, String noteName) async {
     recentNotes.removeWhere((r) => r.noteId == noteId);
     recentNotes.insert(0, RecentNote(
       folderName: folderName,
@@ -345,6 +103,8 @@ class AppData extends ChangeNotifier {
       noteName: noteName,
       accessedAt: DateTime.now(),
     ));
+    
+    // Keep only last 9 items
     if (recentNotes.length > 9) recentNotes.removeLast();
 
     await _saveRecentNotes();
@@ -357,8 +117,10 @@ class AppData extends ChangeNotifier {
 
     appName = prefs.getString('app_name') ?? 'darkslip';
     savePath = prefs.getString('save_path') ?? '/storage/emulated/0/Documents/darkslip';
-
+    
+    // Load saved expansion state
     expandedTiles.addAll(prefs.getStringList('expanded_tiles') ?? []);
+    
     await _loadRecentNotes();
 
     try {
@@ -369,10 +131,6 @@ class AppData extends ChangeNotifier {
     } catch (e) {
       _lastError = 'Storage not accessible. Go to Settings > Apps > darkslip > Permissions > Files & Media > Select "All files access"';
     }
-
-    linkCache = LinkCache('$savePath/.link_cache.json');
-    await linkCache.init();
-    linkCache.addListener(() => notifyListeners());
 
     await syncFromDisk();
     _initialized = true;
@@ -399,11 +157,6 @@ class AppData extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('save_path', newPath);
     savePath = newPath;
-
-    linkCache = LinkCache('$savePath/.link_cache.json');
-    await linkCache.init();
-    linkCache.addListener(() => notifyListeners());
-
     await syncFromDisk();
     notifyListeners();
   }
@@ -418,14 +171,19 @@ class AppData extends ChangeNotifier {
     }
   }
 
+  // Persistence Helpers
+  
   Future<void> _saveExpandedTiles() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setStringList('expanded_tiles', expandedTiles.toList());
   }
 
   void toggleExpanded(String id) {
-    if (expandedTiles.contains(id)) expandedTiles.remove(id);
-    else expandedTiles.add(id);
+    if (expandedTiles.contains(id)) {
+      expandedTiles.remove(id);
+    } else {
+      expandedTiles.add(id);
+    }
     _saveExpandedTiles();
     notifyListeners();
   }
@@ -441,12 +199,15 @@ class AppData extends ChangeNotifier {
     recentNotes = list.map((s) => RecentNote.fromJson(s)).toList();
   }
 
+  // File System Operations
+
   Future<void> syncFromDisk() async {
     try {
       final dir = Directory(savePath);
       if (!await dir.exists()) return;
 
       folders.clear();
+      
       await for (var entity in dir.list()) {
         if (entity is Directory) {
           final folderName = entity.path.split(Platform.pathSeparator).last;
@@ -487,10 +248,12 @@ class AppData extends ChangeNotifier {
     try {
       final path = await _getNoteFilePath(note, subFolder, folder);
       String mdContent = '';
+      
       for (var post in note.posts) {
         if (post.isPinned) mdContent += '<!-- PINNED -->\n';
         mdContent += '${post.content}\n---\n\n';
       }
+      
       await File(path).writeAsString(mdContent);
     } catch (e) { 
       _lastError = 'Save failed: $e'; 
@@ -507,6 +270,7 @@ class AppData extends ChangeNotifier {
       if (!await file.exists()) return;
 
       String content = await file.readAsString();
+      // Split by separator line
       final sections = content.split(RegExp(r'^\s*---\s*$', multiLine: true));
 
       note.posts.clear();
@@ -539,6 +303,8 @@ class AppData extends ChangeNotifier {
     await saveNote(note, subFolder, folder);
   }
 
+  // CRUD Operations for Folders/SubFolders/Notes
+
   Future<void> createFolder(String name) async {
     folders.add(Folder(id: 'f_$name', name: name));
     notifyListeners();
@@ -548,10 +314,14 @@ class AppData extends ChangeNotifier {
     try {
       final oldDir = Directory('$savePath/${folder.name}');
       if (await oldDir.exists()) await oldDir.rename('$savePath/$newName');
+      
       expandedTiles.remove(folder.id);
       folder.id = 'f_$newName';
       folder.name = newName;
-    } catch (e) { _lastError = 'Rename failed: $e'; debugPrint(_lastError); }
+    } catch (e) { 
+      _lastError = 'Rename failed: $e'; 
+      debugPrint(_lastError); 
+    }
     notifyListeners();
   }
 
@@ -559,9 +329,13 @@ class AppData extends ChangeNotifier {
     try {
       final dir = Directory('$savePath/${folder.name}');
       if (await dir.exists()) await dir.delete(recursive: true);
+      
       folders.removeWhere((f) => f.id == folder.id);
       expandedTiles.remove(folder.id);
-    } catch (e) { _lastError = 'Delete failed: $e'; debugPrint(_lastError); }
+    } catch (e) { 
+      _lastError = 'Delete failed: $e'; 
+      debugPrint(_lastError); 
+    }
     notifyListeners();
   }
 
@@ -576,10 +350,14 @@ class AppData extends ChangeNotifier {
     try {
       final oldDir = Directory('$savePath/${parentFolder.name}/${subFolder.name}');
       if (await oldDir.exists()) await oldDir.rename('$savePath/${parentFolder.name}/$newName');
+      
       expandedTiles.remove(subFolder.id);
       subFolder.id = 'sf_${parentFolder.name}_$newName';
       subFolder.name = newName;
-    } catch (e) { _lastError = 'Rename failed: $e'; debugPrint(_lastError); }
+    } catch (e) { 
+      _lastError = 'Rename failed: $e'; 
+      debugPrint(_lastError); 
+    }
     notifyListeners();
   }
 
@@ -587,9 +365,13 @@ class AppData extends ChangeNotifier {
     try {
       final dir = Directory('$savePath/${parentFolder.name}/${subFolder.name}');
       if (await dir.exists()) await dir.delete(recursive: true);
+      
       parentFolder.subFolders.removeWhere((sf) => sf.id == subFolder.id);
       expandedTiles.remove(subFolder.id);
-    } catch (e) { _lastError = 'Delete failed: $e'; debugPrint(_lastError); }
+    } catch (e) { 
+      _lastError = 'Delete failed: $e'; 
+      debugPrint(_lastError); 
+    }
     notifyListeners();
   }
 
@@ -606,12 +388,16 @@ class AppData extends ChangeNotifier {
       final oldPath = await _getNoteFilePath(note, subFolder, folder);
       final newDir = Directory('$savePath/${folder.name}/${subFolder.name}');
       if (!await newDir.exists()) await newDir.create(recursive: true);
+      
       final newPath = '${newDir.path}/$newName.md';
-
       final oldFile = File(oldPath);
+      
       if (await oldFile.exists()) await oldFile.rename(newPath);
       note.name = newName;
-    } catch (e) { _lastError = 'Rename failed: $e'; debugPrint(_lastError); }
+    } catch (e) { 
+      _lastError = 'Rename failed: $e'; 
+      debugPrint(_lastError); 
+    }
     notifyListeners();
   }
 
@@ -619,8 +405,12 @@ class AppData extends ChangeNotifier {
     try {
       final path = await _getNoteFilePath(note, subFolder, folder);
       if (await File(path).exists()) await File(path).delete();
+      
       subFolder.notes.removeWhere((n) => n.id == note.id);
-    } catch (e) { _lastError = 'Delete failed: $e'; debugPrint(_lastError); }
+    } catch (e) { 
+      _lastError = 'Delete failed: $e'; 
+      debugPrint(_lastError); 
+    }
     notifyListeners();
   }
 
@@ -631,6 +421,7 @@ class AppData extends ChangeNotifier {
 }
 
 // ================= THEME =================
+
 ThemeData darkSlipTheme() => ThemeData(
   brightness: Brightness.dark,
   primaryColor: const Color(0xFF2A2A2A),
@@ -655,10 +446,12 @@ ThemeData darkSlipTheme() => ThemeData(
 );
 
 // ================= SCREENS =================
+
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
-  void _showCreateDialog(BuildContext ctx, String title, TextEditingController controller, Function(String) onConfirm) {
+  // Helper to show standard create/rename dialogs
+  void _showInputDialog(BuildContext ctx, String title, TextEditingController controller, Function(String) onConfirm) {
     showDialog(
       context: ctx,
       builder: (_) => AlertDialog(
@@ -739,7 +532,8 @@ class HomeScreen extends StatelessWidget {
     return GestureDetector(
       onTap: () {
         final data = ctx.read<AppData>();
-
+        
+        // Find the note in the current state to navigate
         for (var f in data.folders) {
           if (f.name == recent.folderName) {
             for (var sf in f.subFolders) {
@@ -826,7 +620,7 @@ class HomeScreen extends StatelessWidget {
             icon: const Icon(Icons.create_new_folder),
             onPressed: () {
               final ctrl = TextEditingController();
-              _showCreateDialog(context, 'New Folder', ctrl, (name) => context.read<AppData>().createFolder(name));
+              _showInputDialog(context, 'New Folder', ctrl, (name) => context.read<AppData>().createFolder(name));
             },
             tooltip: 'New Folder',
           ),
@@ -841,91 +635,131 @@ class HomeScreen extends StatelessWidget {
           if (data._lastError != null) {
             return Center(child: Text('Storage Error:\n${data._lastError}', textAlign: TextAlign.center, style: const TextStyle(color: Colors.red)));
           }
+          
           return ListView.builder(
             itemCount: data.folders.length,
-            itemBuilder: (_, i) {
-              final folder = data.folders[i];
-              return GestureDetector(
-                onLongPress: () => _showItemMenu(ctx, 'Folder', 
-                  onRename: () => _showCreateDialog(ctx, 'Rename Folder', TextEditingController(text: folder.name), (name) => data.renameFolder(folder, name)),
-                  onDelete: () {
-                    showDialog(context: ctx, builder: (_) => AlertDialog(
-                      backgroundColor: Colors.grey[900],
-                      title: const Text('Delete Folder?', style: TextStyle(color: Colors.white)),
-                      content: Text('This will permanently delete "${folder.name}" and all its contents.', style: const TextStyle(color: Colors.white70)),
-                      actions: [
-                        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-                        TextButton(onPressed: () { data.deleteFolder(folder); Navigator.pop(ctx); }, style: ButtonStyle(foregroundColor: WidgetStateProperty.all(Colors.red)), child: const Text('Delete')),
-                      ],
-                    ));
-                  }
-                ),
-                child: ExpansionTile(
-                  initiallyExpanded: data.expandedTiles.contains(folder.id),
-                  onExpansionChanged: (expanded) => data.toggleExpanded(folder.id),
-                  leading: const Icon(Icons.folder, color: Colors.white70),
-                  title: Text(folder.name),
-                  trailing: IconButton(icon: const Icon(Icons.add_circle_outline), onPressed: () => _showCreateDialog(ctx, 'New SubFolder', TextEditingController(), (name) => data.createSubFolder(name, folder))),
-                  children: [
-                    if (folder.subFolders.isEmpty)
-                      const Padding(padding: EdgeInsets.all(16), child: Text('No subfolders yet.', style: TextStyle(color: Colors.grey))),
-                    ...folder.subFolders.map((sf) => GestureDetector(
-                          onLongPress: () => _showItemMenu(ctx, 'SubFolder',
-                            onRename: () => _showCreateDialog(ctx, 'Rename SubFolder', TextEditingController(text: sf.name), (name) => data.renameSubFolder(sf, folder, name)),
-                            onDelete: () {
-                              showDialog(context: ctx, builder: (_) => AlertDialog(
-                                backgroundColor: Colors.grey[900],
-                                title: const Text('Delete SubFolder?', style: TextStyle(color: Colors.white)),
-                                content: Text('This will permanently delete "${sf.name}" and all its notes.', style: const TextStyle(color: Colors.white70)),
-                                actions: [
-                                  TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-                                  TextButton(onPressed: () { data.deleteSubFolder(sf, folder); Navigator.pop(ctx); }, style: ButtonStyle(foregroundColor: WidgetStateProperty.all(Colors.red)), child: const Text('Delete')),
-                                ],
-                              ));
-                            }
-                          ),
-                          child: ExpansionTile(
-                            initiallyExpanded: data.expandedTiles.contains(sf.id),
-                            onExpansionChanged: (expanded) => data.toggleExpanded(sf.id),
-                            leading: const Icon(Icons.folder_open, color: Colors.white70),
-                            title: Text(sf.name),
-                            trailing: IconButton(icon: const Icon(Icons.add_circle_outline), onPressed: () => _showCreateDialog(ctx, 'New Note', TextEditingController(), (name) => data.createNote(name, sf, folder))),
-                            children: [
-                              if (sf.notes.isEmpty)
-                                const Padding(padding: EdgeInsets.all(16), child: Text('No notes yet.', style: TextStyle(color: Colors.grey))),
-                              ...sf.notes.map((note) => GestureDetector(
-                                      onLongPress: () => _showItemMenu(ctx, 'Note',
-                                        onRename: () => _showCreateDialog(ctx, 'Rename Note', TextEditingController(text: note.name), (name) => data.renameNote(note, name, sf, folder)),
-                                        onDelete: () {
-                                          showDialog(context: ctx, builder: (_) => AlertDialog(
-                                            backgroundColor: Colors.grey[900],
-                                            title: const Text('Delete Note?', style: TextStyle(color: Colors.white)),
-                                            content: Text('This will permanently delete "${note.name}" and its file.', style: const TextStyle(color: Colors.white70)),
-                                            actions: [
-                                              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-                                              TextButton(onPressed: () { data.deleteNote(note, sf, folder); Navigator.pop(ctx); }, style: ButtonStyle(foregroundColor: WidgetStateProperty.all(Colors.red)), child: const Text('Delete')),
-                                            ],
-                                          ));
-                                        }
-                                      ),
-                                      child: ListTile(
-                                        leading: const Icon(Icons.note_outlined, color: Colors.white70),
-                                        title: Text(note.name),
-                                        subtitle: Text('${note.posts.length} posts'),
-                                        onTap: () {
-                                          context.read<AppData>().addRecentNote(folder.name, sf.name, note.id, note.name);
-                                          Navigator.push(ctx, MaterialPageRoute(builder: (_) => NoteScreen(folder: folder, subFolder: sf, note: note)));
-                                        },
-                                      ),
-                                    )),
-                            ],
-                          ),
-                        )),
-                  ],
-                ),
-              );
-            },
+            itemBuilder: (_, i) => _buildFolderTile(ctx, data, data.folders[i]),
           );
+        },
+      ),
+    );
+  }
+
+  // Extracted Folder Tile Builder for cleaner code
+  Widget _buildFolderTile(BuildContext ctx, AppData data, Folder folder) {
+    return GestureDetector(
+      onLongPress: () => _showItemMenu(ctx, 'Folder', 
+        onRename: () => _showInputDialog(ctx, 'Rename Folder', TextEditingController(text: folder.name), (name) => data.renameFolder(folder, name)),
+        onDelete: () {
+          showDialog(context: ctx, builder: (_) => AlertDialog(
+            backgroundColor: Colors.grey[900],
+            title: const Text('Delete Folder?', style: TextStyle(color: Colors.white)),
+            content: Text('This will permanently delete "${folder.name}" and all its contents.', style: const TextStyle(color: Colors.white70)),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+              TextButton(
+                onPressed: () { 
+                  data.deleteFolder(folder); 
+                  Navigator.pop(ctx); 
+                }, 
+                style: ButtonStyle(foregroundColor: WidgetStateProperty.all(Colors.red)), 
+                child: const Text('Delete')
+              ),
+            ],
+          ));
+        }
+      ),
+      child: ExpansionTile(
+        initiallyExpanded: data.expandedTiles.contains(folder.id),
+        onExpansionChanged: (expanded) => data.toggleExpanded(folder.id),
+        leading: const Icon(Icons.folder, color: Colors.white70),
+        title: Text(folder.name),
+        trailing: IconButton(
+          icon: const Icon(Icons.add_circle_outline), 
+          onPressed: () => _showInputDialog(ctx, 'New SubFolder', TextEditingController(), (name) => data.createSubFolder(name, folder))
+        ),
+        children: [
+          if (folder.subFolders.isEmpty)
+            const Padding(padding: EdgeInsets.all(16), child: Text('No subfolders yet.', style: TextStyle(color: Colors.grey))),
+          ...folder.subFolders.map((sf) => _buildSubFolderTile(ctx, data, folder, sf)),
+        ],
+      ),
+    );
+  }
+
+  // Extracted SubFolder Tile Builder
+  Widget _buildSubFolderTile(BuildContext ctx, AppData data, Folder parentFolder, SubFolder subFolder) {
+    return GestureDetector(
+      onLongPress: () => _showItemMenu(ctx, 'SubFolder',
+        onRename: () => _showInputDialog(ctx, 'Rename SubFolder', TextEditingController(text: subFolder.name), (name) => data.renameSubFolder(subFolder, parentFolder, name)),
+        onDelete: () {
+          showDialog(context: ctx, builder: (_) => AlertDialog(
+            backgroundColor: Colors.grey[900],
+            title: const Text('Delete SubFolder?', style: TextStyle(color: Colors.white)),
+            content: Text('This will permanently delete "${subFolder.name}" and all its notes.', style: const TextStyle(color: Colors.white70)),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+              TextButton(
+                onPressed: () { 
+                  data.deleteSubFolder(subFolder, parentFolder); 
+                  Navigator.pop(ctx); 
+                }, 
+                style: ButtonStyle(foregroundColor: WidgetStateProperty.all(Colors.red)), 
+                child: const Text('Delete')
+              ),
+            ],
+          ));
+        }
+      ),
+      child: ExpansionTile(
+        initiallyExpanded: data.expandedTiles.contains(subFolder.id),
+        onExpansionChanged: (expanded) => data.toggleExpanded(subFolder.id),
+        leading: const Icon(Icons.folder_open, color: Colors.white70),
+        title: Text(subFolder.name),
+        trailing: IconButton(
+          icon: const Icon(Icons.add_circle_outline), 
+          onPressed: () => _showInputDialog(ctx, 'New Note', TextEditingController(), (name) => data.createNote(name, subFolder, parentFolder))
+        ),
+        children: [
+          if (subFolder.notes.isEmpty)
+            const Padding(padding: EdgeInsets.all(16), child: Text('No notes yet.', style: TextStyle(color: Colors.grey))),
+          ...subFolder.notes.map((note) => _buildNoteTile(ctx, data, parentFolder, subFolder, note)),
+        ],
+      ),
+    );
+  }
+
+  // Extracted Note Tile Builder
+  Widget _buildNoteTile(BuildContext ctx, AppData data, Folder folder, SubFolder subFolder, Note note) {
+    return GestureDetector(
+      onLongPress: () => _showItemMenu(ctx, 'Note',
+        onRename: () => _showInputDialog(ctx, 'Rename Note', TextEditingController(text: note.name), (name) => data.renameNote(note, name, subFolder, folder)),
+        onDelete: () {
+          showDialog(context: ctx, builder: (_) => AlertDialog(
+            backgroundColor: Colors.grey[900],
+            title: const Text('Delete Note?', style: TextStyle(color: Colors.white)),
+            content: Text('This will permanently delete "${note.name}" and its file.', style: const TextStyle(color: Colors.white70)),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+              TextButton(
+                onPressed: () { 
+                  data.deleteNote(note, subFolder, folder); 
+                  Navigator.pop(ctx); 
+                }, 
+                style: ButtonStyle(foregroundColor: WidgetStateProperty.all(Colors.red)), 
+                child: const Text('Delete')
+              ),
+            ],
+          ));
+        }
+      ),
+      child: ListTile(
+        leading: const Icon(Icons.note_outlined, color: Colors.white70),
+        title: Text(note.name),
+        subtitle: Text('${note.posts.length} posts'),
+        onTap: () {
+          data.addRecentNote(folder.name, subFolder.name, note.id, note.name);
+          Navigator.push(ctx, MaterialPageRoute(builder: (_) => NoteScreen(folder: folder, subFolder: subFolder, note: note)));
         },
       ),
     );
@@ -936,6 +770,7 @@ class NoteScreen extends StatefulWidget {
   final Folder folder;
   final SubFolder subFolder;
   final Note note;
+  
   const NoteScreen({super.key, required this.folder, required this.subFolder, required this.note});
 
   @override
@@ -976,11 +811,59 @@ class _NoteScreenState extends State<NoteScreen> {
     }
   }
 
-  void _populateLinkCache(String content) {
-    final urlRegex = RegExp(r'https?://[^\s<>"{}|\\^`\[\]]+');
-    for (var match in urlRegex.allMatches(content)) {
-      context.read<AppData>().linkCache.ensureCached(match.group(0)!);
+  // Formatting Helpers
+  
+  void _insertCodeBlock() {
+    final currentText = _controller.text;
+    final selection = _controller.selection;
+    
+    const codeBlockSyntax = '```\n\n```';
+    
+    String newText;
+    int newCursorPos;
+
+    if (selection.isCollapsed) {
+      newText = currentText.replaceRange(selection.baseOffset, selection.extentOffset, codeBlockSyntax);
+      newCursorPos = selection.baseOffset + 4; 
+    } else {
+      final selectedText = currentText.substring(selection.start, selection.end);
+      newText = currentText.replaceRange(selection.start, selection.end, '```\n$selectedText\n```');
+      newCursorPos = selection.start + 4;
     }
+
+    _controller.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(offset: newCursorPos),
+    );
+    
+    FocusScope.of(context).requestFocus(FocusNode()); 
+  }
+
+  void _insertQuoteBlock() {
+    final currentText = _controller.text;
+    final selection = _controller.selection;
+    
+    String newText;
+    int newCursorPos;
+
+    if (selection.isCollapsed) {
+      const quoteSyntax = '> ';
+      newText = currentText.replaceRange(selection.baseOffset, selection.extentOffset, quoteSyntax);
+      newCursorPos = selection.baseOffset + 2; 
+    } else {
+      final selectedText = currentText.substring(selection.start, selection.end);
+      final quotedLines = selectedText.split('\n').map((line) => '> $line').join('\n');
+      
+      newText = currentText.replaceRange(selection.start, selection.end, quotedLines);
+      newCursorPos = selection.start + 2; 
+    }
+
+    _controller.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(offset: newCursorPos),
+    );
+    
+    FocusScope.of(context).requestFocus(FocusNode()); 
   }
 
   void _addPost() {
@@ -999,8 +882,6 @@ class _NoteScreenState extends State<NoteScreen> {
     
     if (mounted) setState(() {}); 
     context.read<AppData>().saveNote(widget.note, widget.subFolder, widget.folder);
-    
-    _populateLinkCache(text);
     
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
@@ -1023,7 +904,6 @@ class _NoteScreenState extends State<NoteScreen> {
             onPressed: () {
               context.read<AppData>().updatePostContent(post, ctrl.text.trim());
               context.read<AppData>().saveNote(widget.note, widget.subFolder, widget.folder);
-              _populateLinkCache(ctrl.text.trim());
               if (mounted) setState(() {});
               Navigator.pop(context);
             },
@@ -1036,6 +916,7 @@ class _NoteScreenState extends State<NoteScreen> {
 
   void _jumpToAndHighlight(Post post) {
     setState(() => _highlightedPostId = post.id);
+    
     if (_highlightTimer?.isActive ?? false) _highlightTimer!.cancel();
     _highlightTimer = Timer(const Duration(seconds: 2), () {
       if (mounted) setState(() => _highlightedPostId = null);
@@ -1055,6 +936,7 @@ class _NoteScreenState extends State<NoteScreen> {
 
   void _showPinnedDialog() {
     final pinned = widget.note.posts.where((p) => p.isPinned).toList();
+    
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
@@ -1091,30 +973,6 @@ class _NoteScreenState extends State<NoteScreen> {
     super.dispose();
   }
 
-  /// Prepares markdown content by injecting link previews.
-  /// Short summaries (<60 chars) are treated as Titles (Bold).
-  /// Longer summaries are treated as Descriptions (Italic/Quote).
-  String _prepareMarkdownWithSummaries(String content) {
-    final cache = context.read<AppData>().linkCache;
-    final urlRegex = RegExp(r'(https?://[^\s<>"{}|\\^`\[\]]+)');
-    
-    return content.replaceAllMapped(urlRegex, (match) {
-      final url = match.group(0)!;
-      final summary = cache.getSummary(url);
-
-      if (summary != null && summary.isNotEmpty) {
-        // If the summary is short (< 60 chars), treat it as a Title (Bold)
-        // If longer, treat it as a Description (Standard Quote)
-        if (summary.length < 60) {
-          return '$url\n> **$summary**'; 
-        } else {
-          return '$url\n> $summary';
-        }
-      }
-      return url;
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
     final bottomPadding = MediaQuery.of(context).padding.bottom;
@@ -1124,6 +982,16 @@ class _NoteScreenState extends State<NoteScreen> {
         title: Text(widget.note.name),
         actions: [
           IconButton(icon: const Icon(Icons.push_pin), onPressed: _showPinnedDialog, tooltip: 'View Pinned'),
+          IconButton(
+            icon: const Icon(Icons.code), 
+            onPressed: _insertCodeBlock, 
+            tooltip: 'Insert Code Block'
+          ),
+          IconButton(
+            icon: const Icon(Icons.format_quote), 
+            onPressed: _insertQuoteBlock, 
+            tooltip: 'Insert Quote/Highlight'
+          ),
           IconButton(icon: const Icon(Icons.settings), onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen()))),
         ],
       ),
@@ -1135,82 +1003,7 @@ class _NoteScreenState extends State<NoteScreen> {
               reverse: true,
               padding: const EdgeInsets.all(12),
               itemCount: widget.note.posts.length,
-              itemBuilder: (_, i) {
-                final post = widget.note.posts[i];
-                final isHighlighted = post.id == _highlightedPostId;
-
-                return Dismissible(
-                  key: ValueKey(post.id),
-                  direction: DismissDirection.endToStart,
-                  background: Container(
-                    color: Colors.red[700],
-                    alignment: Alignment.centerLeft,
-                    padding: const EdgeInsets.only(left: 20.0),
-                    child: const Icon(Icons.delete, color: Colors.white),
-                  ),
-                  onDismissed: (direction) {
-                    widget.note.posts.removeWhere((p) => p.id == post.id);
-                    setState(() {});
-                    context.read<AppData>().saveNote(widget.note, widget.subFolder, widget.folder);
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Post deleted'), duration: Duration(seconds: 1)),
-                      );
-                    }
-                  },
-                  child: GestureDetector(
-                    onTap: () => _copyToClipboard(post.content),
-                    onLongPress: () => _editPost(post),
-                    child: Card(
-                      margin: const EdgeInsets.only(bottom: 10),
-                      color: isHighlighted ? Colors.grey[800] : Colors.grey[850],
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        side: BorderSide.none,
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                          Row(mainAxisAlignment: MainAxisAlignment.end, children: [
-                            IconButton(
-                              icon: Icon(Icons.push_pin, color: post.isPinned ? Colors.amber : Colors.grey[600]),
-                              onPressed: () async {
-                                await context.read<AppData>().togglePin(widget.note, post, widget.subFolder, widget.folder);
-                                if (mounted) setState(() {});
-                              },
-                            ),
-                          ]),
-                          MarkdownBody(
-                            data: _prepareMarkdownWithSummaries(post.content.replaceAll('\n', '\n\n')),
-                            onTapLink: (text, href, title) async {
-                              if (href == null || href.isEmpty) return;
-                              try {
-                                final uri = Uri.parse(href);
-                                if (await canLaunchUrl(uri)) {
-                                  await launchUrl(uri, mode: LaunchMode.externalApplication);
-                                } else {
-                                  if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not open $href')));
-                                }
-                              } catch (_) {}
-                            },
-                            styleSheet: MarkdownStyleSheet(
-                              p: const TextStyle(height: 1.3),
-                              a: const TextStyle(color: Colors.blueAccent, decoration: TextDecoration.underline),
-                              blockquoteDecoration: BoxDecoration(
-                                border: Border(left: BorderSide(color: Colors.grey[700]!, width: 4)),
-                                color: Colors.transparent,
-                              ),
-                              blockquotePadding: const EdgeInsets.symmetric(horizontal: 8),
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text('${post.createdAt.hour}:${post.createdAt.minute.toString().padLeft(2, '0')}', style: TextStyle(color: Colors.grey[600], fontSize: 12)),
-                        ]),
-                      ),
-                    ),
-                  ),
-                );
-              },
+              itemBuilder: (_, i) => _buildPostItem(widget.note.posts[i]),
             ),
           ),
           SafeArea(
@@ -1237,6 +1030,83 @@ class _NoteScreenState extends State<NoteScreen> {
       ),
     );
   }
+
+  // Extracted Post Item Builder
+  Widget _buildPostItem(Post post) {
+    final isHighlighted = post.id == _highlightedPostId;
+
+    return Dismissible(
+      key: ValueKey(post.id),
+      direction: DismissDirection.endToStart,
+      background: Container(
+        color: Colors.red[700],
+        alignment: Alignment.centerLeft,
+        padding: const EdgeInsets.only(left: 20.0),
+        child: const Icon(Icons.delete, color: Colors.white),
+      ),
+      onDismissed: (direction) {
+        widget.note.posts.removeWhere((p) => p.id == post.id);
+        setState(() {});
+        context.read<AppData>().saveNote(widget.note, widget.subFolder, widget.folder);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Post deleted'), duration: Duration(seconds: 1)),
+          );
+        }
+      },
+      child: GestureDetector(
+        onTap: () => _copyToClipboard(post.content),
+        onLongPress: () => _editPost(post),
+        child: Card(
+          margin: const EdgeInsets.only(bottom: 10),
+          color: isHighlighted ? Colors.grey[800] : Colors.grey[850],
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+            side: BorderSide.none,
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                IconButton(
+                  icon: Icon(Icons.push_pin, color: post.isPinned ? Colors.amber : Colors.grey[600]),
+                  onPressed: () async {
+                    await context.read<AppData>().togglePin(widget.note, post, widget.subFolder, widget.folder);
+                    if (mounted) setState(() {});
+                  },
+                ),
+              ]),
+              MarkdownBody(
+                data: post.content.replaceAll('\n', '\n\n'),
+                styleSheet: MarkdownStyleSheet(
+                  p: const TextStyle(height: 1.3),
+                  a: const TextStyle(color: Colors.blueAccent, decoration: TextDecoration.underline),
+                  blockquoteDecoration: BoxDecoration(
+                    border: Border(left: BorderSide(color: Colors.grey[700]!, width: 4)),
+                    color: Colors.transparent,
+                  ),
+                  blockquotePadding: const EdgeInsets.symmetric(horizontal: 8),
+                ),
+                onTapLink: (text, href, title) async {
+                  if (href == null || href.isEmpty) return;
+                  try {
+                    final uri = Uri.parse(href);
+                    if (await canLaunchUrl(uri)) {
+                      await launchUrl(uri, mode: LaunchMode.externalApplication);
+                    } else {
+                      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not open $href')));
+                    }
+                  } catch (e) { debugPrint('Link error: $e'); }
+                },
+              ),
+              const SizedBox(height: 4),
+              Text('${post.createdAt.hour}:${post.createdAt.minute.toString().padLeft(2, '0')}', style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+            ]),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class SettingsScreen extends StatelessWidget {
@@ -1245,6 +1115,7 @@ class SettingsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final data = context.watch<AppData>();
+    
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
       body: Padding(
@@ -1283,12 +1154,11 @@ class SettingsScreen extends StatelessWidget {
 }
 
 // ================= APP ENTRY =================
+
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   
-  // Shows top & bottom system bars permanently (no full-screen hiding)
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: [SystemUiOverlay.top, SystemUiOverlay.bottom]);
-  
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
 
   runApp(ChangeNotifierProvider(create: (_) => AppData()..init(), child: const DarkSlipApp()));
