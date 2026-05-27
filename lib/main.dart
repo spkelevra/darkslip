@@ -937,7 +937,7 @@ class _NoteScreenState extends State<NoteScreen> {
     final currentText = _controller.text;
     final selection = _controller.selection;
 
-    const tableSyntax = '| Column 1 | Column 2 | Column 3 |\n|----------|----------|----------|\n| Cell 1   | Cell 2   | Cell 3   |';
+    const tableSyntax = '| Column1 | Column2 | Column3 |\n|---------|---------|---------|\n| Cell1   | Cell2   | Cell3   |';
 
     // Use the valid cursor position, defaulting to end of text if selection is invalid (-1)
     final insertPos = selection.isValid ? selection.start : currentText.length;
