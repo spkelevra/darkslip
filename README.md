@@ -1,8 +1,8 @@
 # darkslip
 
-darkslip is a simple, opinionated markdown editor for quick scratch notes. Text only, dark mode only.
+darkslip is a simple, opinionated markdown editor for quick scratch notes.
 
- Like many, I've become accustomed to taking scratch notes in a private Discord. This aims to emulate that experience in some sense, but keep things simple, local, and in markdown for easy transfer to other platforms.
+ Like many, I've become accustomed to taking scratch notes in a private Discord. This aims to emulate that experience in some sense, but keep things simple, local, and in markdown for easy transfer to other platforms. It's currently text-only.
 
 ## Installation
 
