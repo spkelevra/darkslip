@@ -44,6 +44,7 @@ class Folder {
   String id; // Mutable to allow ID updates on rename
   String name;
   List<SubFolder> subFolders = [];
+  List<Note> notes = [];
 
   Folder({required this.id, required this.name});
 }
@@ -51,28 +52,28 @@ class Folder {
 // Recent Note Model for tracking history
 class RecentNote {
   final String folderName;
-  final String subFolderName;
+  final String? subFolderName; // null means note is directly in the folder
   final String noteId;
   final String noteName;
   final DateTime accessedAt;
 
   RecentNote({
     required this.folderName,
-    required this.subFolderName,
+    this.subFolderName,
     required this.noteId,
     required this.noteName,
     required this.accessedAt,
   });
 
   // Serialization methods
-  String toJson() => '$folderName|$subFolderName|$noteId|$noteName|$accessedAt';
+  String toJson() => '$folderName|${subFolderName ?? ''}|$noteId|$noteName|$accessedAt';
 
   factory RecentNote.fromJson(String json) {
     final parts = json.split('|');
     if (parts.length != 5) throw FormatException('Invalid format');
     return RecentNote(
       folderName: parts[0],
-      subFolderName: parts[1],
+      subFolderName: parts[1].isEmpty ? null : parts[1],
       noteId: parts[2],
       noteName: parts[3],
       accessedAt: DateTime.parse(parts[4]),
@@ -93,8 +94,8 @@ class AppData extends ChangeNotifier {
   // Recent Notes Tracking
   List<RecentNote> recentNotes = [];
 
-  Future<void> addRecentNote(
-      String folderName, String subFolderName, String noteId, String noteName) async {
+    Future<void> addRecentNote(
+      String folderName, String? subFolderName, String noteId, String noteName) async {
     recentNotes.removeWhere((r) => r.noteId == noteId);
     recentNotes.insert(0, RecentNote(
       folderName: folderName,
@@ -208,11 +209,12 @@ class AppData extends ChangeNotifier {
 
       folders.clear();
       
-      await for (var entity in dir.list()) {
+            await for (var entity in dir.list()) {
         if (entity is Directory) {
           final folderName = entity.path.split(Platform.pathSeparator).last;
           final folder = Folder(id: 'f_$folderName', name: folderName);
 
+          // Scan for notes directly in the folder AND subfolders
           await for (var sfEntity in entity.list()) {
             if (sfEntity is Directory) {
               final sfName = sfEntity.path.split(Platform.pathSeparator).last;
@@ -227,6 +229,12 @@ class AppData extends ChangeNotifier {
                 }
               }
               folder.subFolders.add(subFolder);
+            } else if (sfEntity is File && sfEntity.path.endsWith('.md')) {
+              // Note directly in the folder (no subfolder)
+              final noteName = sfEntity.path.split(Platform.pathSeparator).last.replaceAll('.md', '');
+              final note = Note(id: 'n_${noteName.hashCode}_${folder.name.hashCode}', name: noteName);
+              await loadNote(note, null, folder);
+              folder.notes.add(note);
             }
           }
           folders.add(folder);
@@ -238,13 +246,15 @@ class AppData extends ChangeNotifier {
     }
   }
 
-  Future<String> _getNoteFilePath(Note note, SubFolder subFolder, Folder folder) async {
-    final dir = Directory('$savePath/${folder.name}/${subFolder.name}');
+    Future<String> _getNoteFilePath(Note note, SubFolder? subFolder, Folder folder) async {
+    final dir = subFolder != null
+        ? Directory('$savePath/${folder.name}/${subFolder.name}')
+        : Directory('$savePath/${folder.name}');
     if (!await dir.exists()) await dir.create(recursive: true);
     return '${dir.path}/${note.name}.md';
   }
 
-  Future<void> saveNote(Note note, SubFolder subFolder, Folder folder) async {
+  Future<void> saveNote(Note note, SubFolder? subFolder, Folder folder) async {
     try {
       final path = await _getNoteFilePath(note, subFolder, folder);
       String mdContent = '';
@@ -263,7 +273,7 @@ class AppData extends ChangeNotifier {
     }
   }
 
-  Future<void> loadNote(Note note, SubFolder subFolder, Folder folder) async {
+  Future<void> loadNote(Note note, SubFolder? subFolder, Folder folder) async {
     try {
       final path = await _getNoteFilePath(note, subFolder, folder);
       final file = File(path);
@@ -298,7 +308,7 @@ class AppData extends ChangeNotifier {
     }
   }
 
-  Future<void> togglePin(Note note, Post post, SubFolder subFolder, Folder folder) async {
+    Future<void> togglePin(Note note, Post post, SubFolder? subFolder, Folder folder) async {
     post.isPinned = !post.isPinned;
     await saveNote(note, subFolder, folder);
   }
@@ -375,18 +385,25 @@ class AppData extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> createNote(String name, SubFolder subFolder, Folder folder) async {
-    final newNote = Note(id: 'n_${name.hashCode}_${subFolder.name.hashCode}', name: name);
-    subFolder.notes.add(newNote);
-    expandedTiles.add(subFolder.id);
+    Future<void> createNote(String name, Folder folder, {SubFolder? subFolder}) async {
+    final newNote = Note(id: 'n_${name.hashCode}_${(subFolder?.name ?? folder.name).hashCode}', name: name);
+    if (subFolder != null) {
+      subFolder.notes.add(newNote);
+      expandedTiles.add(subFolder.id);
+    } else {
+      folder.notes.add(newNote);
+      expandedTiles.add(folder.id);
+    }
     await saveNote(newNote, subFolder, folder);
     notifyListeners();
   }
 
-  Future<void> renameNote(Note note, String newName, SubFolder subFolder, Folder folder) async {
+    Future<void> renameNote(Note note, String newName, Folder folder, {SubFolder? subFolder}) async {
     try {
       final oldPath = await _getNoteFilePath(note, subFolder, folder);
-      final newDir = Directory('$savePath/${folder.name}/${subFolder.name}');
+      final newDir = subFolder != null
+          ? Directory('$savePath/${folder.name}/${subFolder.name}')
+          : Directory('$savePath/${folder.name}');
       if (!await newDir.exists()) await newDir.create(recursive: true);
       
       final newPath = '${newDir.path}/$newName.md';
@@ -401,12 +418,16 @@ class AppData extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> deleteNote(Note note, SubFolder subFolder, Folder folder) async {
+  Future<void> deleteNote(Note note, Folder folder, {SubFolder? subFolder}) async {
     try {
       final path = await _getNoteFilePath(note, subFolder, folder);
       if (await File(path).exists()) await File(path).delete();
       
-      subFolder.notes.removeWhere((n) => n.id == note.id);
+      if (subFolder != null) {
+        subFolder.notes.removeWhere((n) => n.id == note.id);
+      } else {
+        folder.notes.removeWhere((n) => n.id == note.id);
+      }
     } catch (e) { 
       _lastError = 'Delete failed: $e'; 
       debugPrint(_lastError); 
@@ -528,23 +549,36 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildRecentTile(RecentNote recent, BuildContext ctx) {
+    Widget _buildRecentTile(RecentNote recent, BuildContext ctx) {
     return GestureDetector(
       onTap: () {
         final data = ctx.read<AppData>();
-        
+
         // Find the note in the current state to navigate
         for (var f in data.folders) {
           if (f.name == recent.folderName) {
-            for (var sf in f.subFolders) {
-              if (sf.name == recent.subFolderName) {
-                for (var n in sf.notes) {
-                  if (n.id == recent.noteId) {
-                    Navigator.pop(ctx);
-                    data.addRecentNote(f.name, sf.name, n.id, n.name);
-                    Navigator.push(ctx, MaterialPageRoute(builder: (_) => NoteScreen(folder: f, subFolder: sf, note: n)));
-                    return;
+            // If subFolder is specified, search there
+            if (recent.subFolderName != null) {
+              for (var sf in f.subFolders) {
+                if (sf.name == recent.subFolderName) {
+                  for (var n in sf.notes) {
+                    if (n.id == recent.noteId) {
+                      Navigator.pop(ctx);
+                      data.addRecentNote(f.name, sf.name, n.id, n.name);
+                      Navigator.push(ctx, MaterialPageRoute(builder: (_) => NoteScreen(folder: f, subFolder: sf, note: n)));
+                      return;
+                    }
                   }
+                }
+              }
+            } else {
+              // Search in folder-level notes
+              for (var n in f.notes) {
+                if (n.id == recent.noteId) {
+                  Navigator.pop(ctx);
+                  data.addRecentNote(f.name, null, n.id, n.name);
+                  Navigator.push(ctx, MaterialPageRoute(builder: (_) => NoteScreen(folder: f, note: n)));
+                  return;
                 }
               }
             }
@@ -645,7 +679,7 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  // Extracted Folder Tile Builder for cleaner code
+    // Extracted Folder Tile Builder for cleaner code
   Widget _buildFolderTile(BuildContext ctx, AppData data, Folder folder) {
     return GestureDetector(
       onLongPress: () => _showItemMenu(ctx, 'Folder', 
@@ -674,13 +708,24 @@ class HomeScreen extends StatelessWidget {
         onExpansionChanged: (expanded) => data.toggleExpanded(folder.id),
         leading: const Icon(Icons.folder, color: Colors.white70),
         title: Text(folder.name),
-        trailing: IconButton(
-          icon: const Icon(Icons.add_circle_outline), 
-          onPressed: () => _showInputDialog(ctx, 'New SubFolder', TextEditingController(), (name) => data.createSubFolder(name, folder))
+        trailing: PopupMenuButton<String>(
+          icon: const Icon(Icons.add_circle_outline),
+          itemBuilder: (_) => [
+            const PopupMenuItem(value: 'subfolder', child: Text('New SubFolder')),
+            const PopupMenuItem(value: 'note', child: Text('New Note')),
+          ],
+          onSelected: (value) {
+            if (value == 'subfolder') {
+              _showInputDialog(ctx, 'New SubFolder', TextEditingController(), (name) => data.createSubFolder(name, folder));
+            } else if (value == 'note') {
+              _showInputDialog(ctx, 'New Note', TextEditingController(), (name) => data.createNote(name, folder));
+            }
+          },
         ),
         children: [
-          if (folder.subFolders.isEmpty)
-            const Padding(padding: EdgeInsets.all(16), child: Text('No subfolders yet.', style: TextStyle(color: Colors.grey))),
+          ...folder.notes.map((note) => _buildNoteTile(ctx, data, folder, note)),
+          if (folder.subFolders.isEmpty && folder.notes.isEmpty)
+            const Padding(padding: EdgeInsets.all(16), child: Text('No subfolders or notes yet.', style: TextStyle(color: Colors.grey))),
           ...folder.subFolders.map((sf) => _buildSubFolderTile(ctx, data, folder, sf)),
         ],
       ),
@@ -716,24 +761,24 @@ class HomeScreen extends StatelessWidget {
         onExpansionChanged: (expanded) => data.toggleExpanded(subFolder.id),
         leading: const Icon(Icons.folder_open, color: Colors.white70),
         title: Text(subFolder.name),
-        trailing: IconButton(
+                trailing: IconButton(
           icon: const Icon(Icons.add_circle_outline), 
-          onPressed: () => _showInputDialog(ctx, 'New Note', TextEditingController(), (name) => data.createNote(name, subFolder, parentFolder))
+          onPressed: () => _showInputDialog(ctx, 'New Note', TextEditingController(), (name) => data.createNote(name, parentFolder, subFolder: subFolder))
         ),
         children: [
           if (subFolder.notes.isEmpty)
             const Padding(padding: EdgeInsets.all(16), child: Text('No notes yet.', style: TextStyle(color: Colors.grey))),
-          ...subFolder.notes.map((note) => _buildNoteTile(ctx, data, parentFolder, subFolder, note)),
+          ...subFolder.notes.map((note) => _buildNoteTile(ctx, data, parentFolder, note, subFolder: subFolder)),
         ],
       ),
     );
   }
 
-  // Extracted Note Tile Builder
-  Widget _buildNoteTile(BuildContext ctx, AppData data, Folder folder, SubFolder subFolder, Note note) {
+    // Extracted Note Tile Builder (subFolder is optional for folder-level notes)
+  Widget _buildNoteTile(BuildContext ctx, AppData data, Folder folder, Note note, {SubFolder? subFolder}) {
     return GestureDetector(
       onLongPress: () => _showItemMenu(ctx, 'Note',
-        onRename: () => _showInputDialog(ctx, 'Rename Note', TextEditingController(text: note.name), (name) => data.renameNote(note, name, subFolder, folder)),
+        onRename: () => _showInputDialog(ctx, 'Rename Note', TextEditingController(text: note.name), (name) => data.renameNote(note, name, folder, subFolder: subFolder)),
         onDelete: () {
           showDialog(context: ctx, builder: (_) => AlertDialog(
             backgroundColor: Colors.grey[900],
@@ -743,7 +788,7 @@ class HomeScreen extends StatelessWidget {
               TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
               TextButton(
                 onPressed: () { 
-                  data.deleteNote(note, subFolder, folder); 
+                  data.deleteNote(note, folder, subFolder: subFolder); 
                   Navigator.pop(ctx); 
                 }, 
                 style: ButtonStyle(foregroundColor: WidgetStateProperty.all(Colors.red)), 
@@ -758,7 +803,7 @@ class HomeScreen extends StatelessWidget {
         title: Text(note.name),
         subtitle: Text('${note.posts.length} posts'),
         onTap: () {
-          data.addRecentNote(folder.name, subFolder.name, note.id, note.name);
+          data.addRecentNote(folder.name, subFolder?.name, note.id, note.name);
           Navigator.push(ctx, MaterialPageRoute(builder: (_) => NoteScreen(folder: folder, subFolder: subFolder, note: note)));
         },
       ),
@@ -768,10 +813,10 @@ class HomeScreen extends StatelessWidget {
 
 class NoteScreen extends StatefulWidget {
   final Folder folder;
-  final SubFolder subFolder;
+  final SubFolder? subFolder; // null means note is directly in the folder
   final Note note;
   
-  const NoteScreen({super.key, required this.folder, required this.subFolder, required this.note});
+  const NoteScreen({super.key, required this.folder, this.subFolder, required this.note});
 
   @override
   State<NoteScreen> createState() => _NoteScreenState();
