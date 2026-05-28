@@ -1,9 +1,7 @@
 # darkslip
 
 darkslip is a simple, opinionated markdown editor for scratch notes.
-
- I take many notes in a private Discord. This has issues, like if the service is offline or if exporting is needed.
- -  The idea behind the app was to emulate that experience in some sense. Keep things simple, local, and in a format for easy transfer to other platforms. It's currently text-only.
+-  The idea behind the app was to emulate the private server note taking experience, in some sense. Keep things simple, local, and in a format for easy transfer to other platforms. It's currently text-only.
 
 ## Installation
 
