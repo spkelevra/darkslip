@@ -1101,7 +1101,8 @@ class HomeScreen extends StatelessWidget {
               ),
             ),
           );
-          
+          }
+
           // Display Root Notes first, then Folders
           final allItems = [
             ...data.rootNotes.map((note) => _buildNoteTile(ctx, data, NoteContext(note: note))),
