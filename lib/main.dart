@@ -1041,8 +1041,66 @@ class HomeScreen extends StatelessWidget {
       body: Consumer<AppData>(
         builder: (ctx, data, _) {
           if (!data.storageReady) {
-           return Center(child: Text('Storage Error:\n${data._lastError ?? "Initializing..."}', textAlign: TextAlign.center, style: const TextStyle(color: Colors.red)));
-          }
+           return Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24.0),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.drive_folder_upload_rounded,
+                    size: 80,
+                    color: Colors.grey[600],
+                  ),
+                  const SizedBox(height: 24),
+                  Text(
+                    'Storage Error',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.red[300]),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    data._lastError ?? "Initializing...",
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.grey),
+                  ),
+                  const SizedBox(height: 32),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () async {
+                        await data.requestStoragePermission();
+                      },
+                      icon: const Icon(Icons.security),
+                      label: const Text('Grant Storage Access', style: TextStyle(fontSize: 16)),
+                      style: ElevatedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        backgroundColor: Colors.white,
+                        foregroundColor: Colors.black87,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: () async {
+                        await data.retryStorageInit();
+                      },
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Check Again', style: TextStyle(fontSize: 16)),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        side: BorderSide(color: Colors.grey[700]!),
+                        foregroundColor: Colors.white70,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
           
           // Display Root Notes first, then Folders
           final allItems = [
@@ -1672,6 +1730,20 @@ class SettingsScreen extends StatelessWidget {
             '• This location survives app reinstalls',
             style: TextStyle(color: Colors.grey, height: 1.5),
           ),
+          const SizedBox(height: 24),
+          if (!data.storageReady)
+            ElevatedButton.icon(
+              onPressed: () async {
+                await data.requestStoragePermission();
+              },
+              icon: const Icon(Icons.security),
+              label: const Text('Grant Storage Access'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red[700],
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
         ]),
       ),
     );
@@ -1838,7 +1910,9 @@ class DarkSlipApp extends StatelessWidget {
       theme: darkSlipTheme(),
       home: Consumer<AppData>(
         builder: (ctx, data, _) {
-          if (!data.onboardingCompleted) {
+          // Show onboarding if never completed OR if storage is unavailable
+          // (handles reinstall + permission revocation scenarios)
+          if (!data.onboardingCompleted || !data.storageReady) {
             return const OnboardingScreen();
           }
           return const HomeScreen();
