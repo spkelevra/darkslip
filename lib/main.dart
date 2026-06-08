@@ -8,13 +8,17 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+
+
 // ================= MODELS =================
+
 
 class Post {
   final String id;
   String content;
   final DateTime createdAt;
   bool isPinned;
+
 
   Post({
     required this.id,
@@ -24,55 +28,77 @@ class Post {
   });
 }
 
+
 class Note {
   final String id;
   String name;
   List<Post> posts = [];
 
+
   Note({required this.id, required this.name});
 }
 
+
 class SubFolder {
-  String id; // Mutable to allow ID updates on rename
+  String id;
   String name;
   List<Note> notes = [];
+
 
   SubFolder({required this.id, required this.name});
 }
 
+
 class Folder {
-  String id; // Mutable to allow ID updates on rename
+  String id;
   String name;
   List<SubFolder> subFolders = [];
   List<Note> notes = [];
 
+
   Folder({required this.id, required this.name});
 }
 
+
+// Wrapper to bundle Note with its location context
+class NoteContext {
+  final Note note;
+  final Folder? folder;
+  final SubFolder? subFolder;
+
+
+  NoteContext({required this.note, this.folder, this.subFolder});
+  
+  bool get isRootNote => folder == null && subFolder == null;
+}
+
+
 // Recent Note Model for tracking history
 class RecentNote {
-  final String folderName;
-  final String? subFolderName; // null means note is directly in the folder
+  final String? folderName; 
+  final String? subFolderName; 
   final String noteId;
   final String noteName;
   final DateTime accessedAt;
 
+
   RecentNote({
-    required this.folderName,
+    this.folderName,
     this.subFolderName,
     required this.noteId,
     required this.noteName,
     required this.accessedAt,
   });
 
-  // Serialization methods
-  String toJson() => '$folderName|${subFolderName ?? ''}|$noteId|$noteName|$accessedAt';
+
+  String toJson() => '${folderName ?? ''}|${subFolderName ?? ''}|$noteId|$noteName|$accessedAt';
+
 
   factory RecentNote.fromJson(String json) {
     final parts = json.split('|');
     if (parts.length != 5) throw FormatException('Invalid format');
     return RecentNote(
-      folderName: parts[0],
+      folderName: parts[0].isEmpty ? null : parts[0],
       subFolderName: parts[1].isEmpty ? null : parts[1],
       noteId: parts[2],
       noteName: parts[3],
@@ -81,43 +107,59 @@ class RecentNote {
   }
 }
 
-// ================= STATE MANAGEMENT =================
 
-class AppData extends ChangeNotifier {
-  List<Folder> folders = [];
-  String savePath = '';
-  String appName = 'darkslip';
-  Set<String> expandedTiles = {};
-  bool _initialized = false;
-  bool _storageReady = false;
-  bool _onboardingCompleted = false;
-  String? _lastError;
 
-  // Recent Notes Tracking
-  List<RecentNote> recentNotes = [];
+// ================= HELPERS & REPOSITORY =================
 
-  bool get storageReady => _storageReady;
-  bool get onboardingCompleted => _onboardingCompleted;
 
-    Future<void> addRecentNote(
-      String folderName, String? subFolderName, String noteId, String noteName) async {
-    recentNotes.removeWhere((r) => r.noteId == noteId);
-    recentNotes.insert(0, RecentNote(
-      folderName: folderName,
-      subFolderName: subFolderName,
-      noteId: noteId,
-      noteName: noteName,
-      accessedAt: DateTime.now(),
-    ));
+/// Centralizes file path logic to ensure consistency across the app.
+class PathHelper {
+  static String getFilePath(String savePath, Note note, Folder? folder, SubFolder? subFolder) {
+    if (folder == null && subFolder == null) {
+      return '$savePath/${note.name}.md';
+    }
     
-    // Keep only last 9 items
-    if (recentNotes.length > 9) recentNotes.removeLast();
-
-    await _saveRecentNotes();
-    notifyListeners();
+    final baseDir = folder!.name;
+    final subDir = subFolder?.name ?? '';
+    final dirPath = subDir.isEmpty 
+        ? '$savePath/$baseDir' 
+        : '$savePath/$baseDir/$subDir';
+        
+    return '$dirPath/${note.name}.md';
   }
 
-    Future<bool> _checkStorageAccess() async {
+
+  static Future<Directory> ensureDirectoryExists(String savePath, Folder? folder, SubFolder? subFolder) async {
+    Directory dir;
+    if (folder == null && subFolder == null) {
+      dir = Directory(savePath);
+    } else {
+      final baseDir = folder!.name;
+      final subDir = subFolder?.name ?? '';
+      final path = subDir.isEmpty 
+          ? '$savePath/$baseDir' 
+          : '$savePath/$baseDir/$subDir';
+      dir = Directory(path);
+    }
+
+
+    if (!await dir.exists()) {
+      await dir.create(recursive: true);
+    }
+    return dir;
+  }
+}
+
+
+/// Handles all File I/O operations. Does not manage UI state or listeners.
+class NoteRepository {
+  final String savePath;
+
+
+  NoteRepository({required this.savePath});
+
+
+  Future<bool> checkStorageAccess() async {
     try {
       Directory(savePath).createSync(recursive: true);
       final testFile = File('$savePath/.write_test');
@@ -125,133 +167,33 @@ class AppData extends ChangeNotifier {
       await testFile.delete();
       return true;
     } catch (e) {
-      _lastError = 'Storage not accessible.';
+      debugPrint('Storage check failed: $e');
       return false;
     }
   }
 
-    Future<void> init() async {
-    if (_initialized) return;
-    final prefs = await SharedPreferences.getInstance();
 
-    appName = prefs.getString('app_name') ?? 'darkslip';
-    savePath = prefs.getString('save_path') ?? '/storage/emulated/0/Documents/darkslip';
-    
-    // Load saved expansion state
-    expandedTiles.addAll(prefs.getStringList('expanded_tiles') ?? []);
-    
-    await _loadRecentNotes();
-
-    // Check if user has completed onboarding before
-    _onboardingCompleted = prefs.getBool('onboarding_completed') ?? false;
-
-    _storageReady = await _checkStorageAccess();
-
-    if (_storageReady) {
-      await syncFromDisk();
-    }
-    _initialized = true;
-    notifyListeners();
-  }
-
-  Future<void> completeOnboarding() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('onboarding_completed', true);
-    _onboardingCompleted = true;
-    notifyListeners();
-  }
-
-  Future<void> retryStorageInit() async {
-    _storageReady = await _checkStorageAccess();
-    if (_storageReady) {
-      await syncFromDisk();
-    }
-    notifyListeners();
-  }
-
-    Future<void> requestStoragePermission() async {
-    try {
-      final status = await Permission.manageExternalStorage.request();
-      if (status.isGranted) {
-        _lastError = null;
-        // Retry storage check after permission granted
-        await retryStorageInit();
-      } else if (status.isDenied) {
-        _lastError = 'Storage permission denied. Please grant access in Settings.';
-      } else if (status.isPermanentlyDenied) {
-        _lastError = 'Permission permanently denied. Please enable it in App Settings > Permissions.';
-      }
-    } catch (e) {
-      _lastError = 'Failed to request permission: $e';
-    }
-    notifyListeners();
-  }
-
-  void updateSavePath(String newPath) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('save_path', newPath);
-    savePath = newPath;
-    await syncFromDisk();
-    notifyListeners();
-  }
-
-  void setAppName(String name) async {
-    final trimmed = name.trim();
-    if (trimmed.length <= 32 && trimmed.isNotEmpty) {
-      appName = trimmed;
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('app_name', appName);
-      notifyListeners();
-    }
-  }
-
-  // Persistence Helpers
-  
-  Future<void> _saveExpandedTiles() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList('expanded_tiles', expandedTiles.toList());
-  }
-
-  void toggleExpanded(String id) {
-    if (expandedTiles.contains(id)) {
-      expandedTiles.remove(id);
-    } else {
-      expandedTiles.add(id);
-    }
-    _saveExpandedTiles();
-    notifyListeners();
-  }
-
-  Future<void> _saveRecentNotes() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList('recent_notes', recentNotes.map((r) => r.toJson()).toList());
-  }
-
-  Future<void> _loadRecentNotes() async {
-    final prefs = await SharedPreferences.getInstance();
-    final list = prefs.getStringList('recent_notes') ?? [];
-    recentNotes = list.map((s) => RecentNote.fromJson(s)).toList();
-  }
-
-  // File System Operations
-
-  Future<void> syncFromDisk() async {
+  Future<void> syncFromDisk(List<Folder> folders, List<Note> rootNotes) async {
     try {
       final dir = Directory(savePath);
       if (!await dir.exists()) return;
 
+
       folders.clear();
-      
-            await for (var entity in dir.list()) {
+      rootNotes.clear();
+
+
+      await for (var entity in dir.list()) {
         if (entity is Directory) {
           final folderName = entity.path.split(Platform.pathSeparator).last;
           final folder = Folder(id: 'f_$folderName', name: folderName);
 
-          // Scan for notes directly in the folder AND subfolders
+
           await for (var sfEntity in entity.list()) {
             if (sfEntity is Directory) {
               final sfName = sfEntity.path.split(Platform.pathSeparator).last;
               final subFolder = SubFolder(id: 'sf_${folder.name}_$sfName', name: sfName);
+
 
               await for (var noteEntity in sfEntity.list()) {
                 if (noteEntity is File && noteEntity.path.endsWith('.md')) {
@@ -263,7 +205,6 @@ class AppData extends ChangeNotifier {
               }
               folder.subFolders.add(subFolder);
             } else if (sfEntity is File && sfEntity.path.endsWith('.md')) {
-              // Note directly in the folder (no subfolder)
               final noteName = sfEntity.path.split(Platform.pathSeparator).last.replaceAll('.md', '');
               final note = Note(id: 'n_${noteName.hashCode}_${folder.name.hashCode}', name: noteName);
               await loadNote(note, null, folder);
@@ -271,25 +212,27 @@ class AppData extends ChangeNotifier {
             }
           }
           folders.add(folder);
+        } 
+        else if (entity is File && entity.path.endsWith('.md')) {
+          final noteName = entity.path.split(Platform.pathSeparator).last.replaceAll('.md', '');
+          // Avoid loading hidden files or system files if any
+          if (!noteName.startsWith('.')) {
+            final note = Note(id: 'n_root_${noteName.hashCode}', name: noteName);
+            await loadNote(note, null, null);
+            rootNotes.add(note);
+          }
         }
       }
     } catch (e) {
-      _lastError = 'Failed to load directory: $e';
-      debugPrint(_lastError);
+      debugPrint('Sync failed: $e');
+      rethrow; // Let the caller handle error display
     }
   }
 
-    Future<String> _getNoteFilePath(Note note, SubFolder? subFolder, Folder folder) async {
-    final dir = subFolder != null
-        ? Directory('$savePath/${folder.name}/${subFolder.name}')
-        : Directory('$savePath/${folder.name}');
-    if (!await dir.exists()) await dir.create(recursive: true);
-    return '${dir.path}/${note.name}.md';
-  }
 
-  Future<void> saveNote(Note note, SubFolder? subFolder, Folder folder) async {
+  Future<void> saveNote(Note note, SubFolder? subFolder, Folder? folder) async {
     try {
-      final path = await _getNoteFilePath(note, subFolder, folder);
+      final path = PathHelper.getFilePath(savePath, note, folder, subFolder);
       String mdContent = '';
       
       for (var post in note.posts) {
@@ -299,32 +242,34 @@ class AppData extends ChangeNotifier {
       
       await File(path).writeAsString(mdContent);
     } catch (e) { 
-      _lastError = 'Save failed: $e'; 
-      debugPrint(_lastError); 
-    } finally {
-      notifyListeners();
+      debugPrint('Save failed: $e');
+      rethrow;
     }
   }
 
-  Future<void> loadNote(Note note, SubFolder? subFolder, Folder folder) async {
+
+  Future<void> loadNote(Note note, SubFolder? subFolder, Folder? folder) async {
     try {
-      final path = await _getNoteFilePath(note, subFolder, folder);
+      final path = PathHelper.getFilePath(savePath, note, folder, subFolder);
       final file = File(path);
       if (!await file.exists()) return;
 
+
       String content = await file.readAsString();
-      // Split by separator line
       final sections = content.split(RegExp(r'^\s*---\s*$', multiLine: true));
+
 
       note.posts.clear();
       for (var i = 0; i < sections.length; i++) {
         var section = sections[i].trim();
         if (section.isEmpty) continue;
 
+
         bool pinned = section.startsWith('<!-- PINNED -->');
         String cleanContent = pinned 
             ? section.replaceFirst(RegExp(r'^<!--\s*PINNED\s*-->\s*\n?', multiLine: true), '').trim() 
             : section;
+
 
         note.posts.add(Post(
           id: '${DateTime.now().microsecondsSinceEpoch}_${i}',
@@ -334,53 +279,338 @@ class AppData extends ChangeNotifier {
         ));
       }
     } catch (e) { 
-      debugPrint('Load error: $e'); 
-      _lastError = 'Failed to load note: $e';
-    } finally {
+      debugPrint('Load error: $e');
+      rethrow;
+    }
+  }
+
+
+  Future<void> deleteNoteFile(Note note, SubFolder? subFolder, Folder? folder) async {
+    try {
+      final path = PathHelper.getFilePath(savePath, note, folder, subFolder);
+      if (await File(path).exists()) await File(path).delete();
+    } catch (e) {
+      debugPrint('Delete file failed: $e');
+      rethrow;
+    }
+  }
+
+
+  Future<void> renameNoteFile(Note note, String newName, SubFolder? subFolder, Folder? folder) async {
+    try {
+      final oldPath = PathHelper.getFilePath(savePath, note, folder, subFolder);
+      
+      // Create new Note object temporarily to get the new path
+      final tempNote = Note(id: note.id, name: newName);
+      final newPath = PathHelper.getFilePath(savePath, tempNote, folder, subFolder);
+      
+      final oldFile = File(oldPath);
+      if (await oldFile.exists()) {
+        await oldFile.rename(newPath);
+      }
+    } catch (e) { 
+      debugPrint('Rename file failed: $e');
+      rethrow;
+    }
+  }
+
+
+  Future<void> deleteFolderDirectory(String folderName) async {
+    try {
+      final dir = Directory('$savePath/$folderName');
+      if (await dir.exists()) await dir.delete(recursive: true);
+    } catch (e) {
+      debugPrint('Delete folder failed: $e');
+      rethrow;
+    }
+  }
+
+
+  Future<void> renameFolderDirectory(String oldName, String newName) async {
+    try {
+      final oldDir = Directory('$savePath/$oldName');
+      if (await oldDir.exists()) await oldDir.rename('$savePath/$newName');
+    } catch (e) { 
+      debugPrint('Rename folder failed: $e');
+      rethrow;
+    }
+  }
+
+
+  Future<void> deleteSubFolderDirectory(String folderName, String subFolderName) async {
+    try {
+      final dir = Directory('$savePath/$folderName/$subFolderName');
+      if (await dir.exists()) await dir.delete(recursive: true);
+    } catch (e) { 
+      debugPrint('Delete subfolder failed: $e');
+      rethrow;
+    }
+  }
+
+
+  Future<void> renameSubFolderDirectory(String folderName, String oldSfName, String newSfName) async {
+    try {
+      final oldDir = Directory('$savePath/$folderName/$oldSfName');
+      if (await oldDir.exists()) await oldDir.rename('$savePath/$folderName/$newSfName');
+    } catch (e) { 
+      debugPrint('Rename subfolder failed: $e');
+      rethrow;
+    }
+  }
+}
+
+
+
+// ================= STATE MANAGEMENT =================
+
+
+class AppData extends ChangeNotifier {
+  List<Folder> folders = [];
+  List<Note> rootNotes = []; 
+  
+  String savePath = '';
+  String appName = 'darkslip';
+  Set<String> expandedTiles = {};
+  
+  bool _initialized = false;
+  bool _storageReady = false;
+  bool _onboardingCompleted = false;
+
+  // Added to fix the undefined getter error
+  String? _lastError;
+
+
+  // Recent Notes Tracking
+  List<RecentNote> recentNotes = [];
+
+
+  late NoteRepository repository;
+
+
+  bool get storageReady => _storageReady;
+  bool get onboardingCompleted => _onboardingCompleted;
+
+
+
+  Future<void> init() async {
+    if (_initialized) return;
+    
+    final prefs = await SharedPreferences.getInstance();
+    appName = prefs.getString('app_name') ?? 'darkslip';
+    savePath = prefs.getString('save_path') ?? '/storage/emulated/0/Documents/darkslip';
+    
+    expandedTiles.addAll(prefs.getStringList('expanded_tiles') ?? []);
+    _onboardingCompleted = prefs.getBool('onboarding_completed') ?? false;
+
+
+    repository = NoteRepository(savePath: savePath);
+    _storageReady = await repository.checkStorageAccess();
+
+
+    if (_storageReady) {
+      try {
+        await repository.syncFromDisk(folders, rootNotes);
+      } catch (e) {
+        debugPrint("Init sync error: $e");
+        _lastError = e.toString(); // Capture error for UI display
+      }
+    } else {
+       _lastError = "Storage access denied or unavailable.";
+    }
+    
+    await _loadRecentNotes();
+    _initialized = true;
+    notifyListeners();
+  }
+
+
+  Future<void> completeOnboarding() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('onboarding_completed', true);
+    _onboardingCompleted = true;
+    notifyListeners();
+  }
+
+
+  Future<void> retryStorageInit() async {
+    repository = NoteRepository(savePath: savePath); // Refresh repo with current path
+    _storageReady = await repository.checkStorageAccess();
+    if (_storageReady) {
+      try {
+        await repository.syncFromDisk(folders, rootNotes);
+        _lastError = null; // Clear error on success
+      } catch (e) {
+        debugPrint("Retry sync error: $e");
+        _lastError = e.toString(); // Capture error for UI display
+      }
+    } else {
+       _lastError = "Storage access denied or unavailable.";
+    }
+    notifyListeners();
+  }
+
+
+  Future<void> requestStoragePermission() async {
+    try {
+      final status = await Permission.manageExternalStorage.request();
+      if (status.isGranted) {
+        await retryStorageInit();
+      } else if (status.isDenied) {
+        debugPrint('Storage permission denied.');
+      } else if (status.isPermanentlyDenied) {
+        debugPrint('Permission permanently denied.');
+      }
+    } catch (e) {
+      debugPrint('Failed to request permission: $e');
+    }
+  }
+
+
+  void updateSavePath(String newPath) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('save_path', newPath);
+    savePath = newPath;
+    
+    repository = NoteRepository(savePath: savePath); // Update repo instance
+    try {
+      await repository.syncFromDisk(folders, rootNotes);
+    } catch (e) {
+      debugPrint("Update path sync error: $e");
+    }
+    notifyListeners();
+  }
+
+
+  void setAppName(String name) async {
+    final trimmed = name.trim();
+    if (trimmed.length <= 32 && trimmed.isNotEmpty) {
+      appName = trimmed;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('app_name', appName);
       notifyListeners();
     }
   }
 
-    Future<void> togglePin(Note note, Post post, SubFolder? subFolder, Folder folder) async {
-    post.isPinned = !post.isPinned;
-    await saveNote(note, subFolder, folder);
+
+  // Persistence Helpers
+  
+  Future<void> _saveExpandedTiles() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList('expanded_tiles', expandedTiles.toList());
   }
 
-  // CRUD Operations for Folders/SubFolders/Notes
+
+  void toggleExpanded(String id) {
+    if (expandedTiles.contains(id)) {
+      expandedTiles.remove(id);
+    } else {
+      expandedTiles.add(id);
+    }
+    _saveExpandedTiles();
+    notifyListeners();
+  }
+
+
+  Future<void> _saveRecentNotes() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList('recent_notes', recentNotes.map((r) => r.toJson()).toList());
+  }
+
+
+  Future<void> _loadRecentNotes() async {
+    final prefs = await SharedPreferences.getInstance();
+    final list = prefs.getStringList('recent_notes') ?? [];
+    recentNotes = list.map((s) => RecentNote.fromJson(s)).toList();
+  }
+
+
+
+  // --- SEARCH & CONTEXT HELPERS ---
+
+
+  /// Finds a NoteContext (Note + Parent Folder/SubFolder) by ID across the entire hierarchy.
+  NoteContext? findNoteById(String noteId) {
+    // Check root notes first
+    for (var n in rootNotes) {
+      if (n.id == noteId) return NoteContext(note: n);
+    }
+
+
+    // Check folders and subfolders
+    for (var f in folders) {
+      // Check folder-level notes
+      for (var n in f.notes) {
+        if (n.id == noteId) return NoteContext(note: n, folder: f);
+      }
+      
+      // Check subfolder notes
+      for (var sf in f.subFolders) {
+        for (var n in sf.notes) {
+          if (n.id == noteId) return NoteContext(note: n, folder: f, subFolder: sf);
+        }
+      }
+    }
+    return null;
+  }
+
+
+  /// Adds a note to recent history. Handles finding the context automatically.
+  Future<void> addRecentNote(String? folderName, String? subFolderName, String noteId, String noteName) async {
+    // Remove existing entry if present
+    recentNotes.removeWhere((r) => r.noteId == noteId);
+    
+    recentNotes.insert(0, RecentNote(
+      folderName: folderName,
+      subFolderName: subFolderName,
+      noteId: noteId,
+      noteName: noteName,
+      accessedAt: DateTime.now(),
+    ));
+    
+    if (recentNotes.length > 9) recentNotes.removeLast();
+
+
+    await _saveRecentNotes();
+    notifyListeners();
+  }
+
+
+
+  // --- CRUD OPERATIONS ---
+
 
   Future<void> createFolder(String name) async {
     folders.add(Folder(id: 'f_$name', name: name));
     notifyListeners();
   }
 
+
   Future<void> renameFolder(Folder folder, String newName) async {
     try {
-      final oldDir = Directory('$savePath/${folder.name}');
-      if (await oldDir.exists()) await oldDir.rename('$savePath/$newName');
+      await repository.renameFolderDirectory(folder.name, newName);
       
       expandedTiles.remove(folder.id);
       folder.id = 'f_$newName';
       folder.name = newName;
     } catch (e) { 
-      _lastError = 'Rename failed: $e'; 
-      debugPrint(_lastError); 
+      debugPrint('Rename failed: $e'); 
     }
     notifyListeners();
   }
 
+
   Future<void> deleteFolder(Folder folder) async {
     try {
-      final dir = Directory('$savePath/${folder.name}');
-      if (await dir.exists()) await dir.delete(recursive: true);
+      await repository.deleteFolderDirectory(folder.name);
       
       folders.removeWhere((f) => f.id == folder.id);
       expandedTiles.remove(folder.id);
     } catch (e) { 
-      _lastError = 'Delete failed: $e'; 
-      debugPrint(_lastError); 
+      debugPrint('Delete failed: $e'); 
     }
     notifyListeners();
   }
+
 
   Future<void> createSubFolder(String name, Folder folder) async {
     final sfId = 'sf_${folder.name}_$name';
@@ -389,36 +619,35 @@ class AppData extends ChangeNotifier {
     notifyListeners();
   }
 
+
   Future<void> renameSubFolder(SubFolder subFolder, Folder parentFolder, String newName) async {
     try {
-      final oldDir = Directory('$savePath/${parentFolder.name}/${subFolder.name}');
-      if (await oldDir.exists()) await oldDir.rename('$savePath/${parentFolder.name}/$newName');
+      await repository.renameSubFolderDirectory(parentFolder.name, subFolder.name, newName);
       
       expandedTiles.remove(subFolder.id);
       subFolder.id = 'sf_${parentFolder.name}_$newName';
       subFolder.name = newName;
     } catch (e) { 
-      _lastError = 'Rename failed: $e'; 
-      debugPrint(_lastError); 
+      debugPrint('Rename failed: $e'); 
     }
     notifyListeners();
   }
 
+
   Future<void> deleteSubFolder(SubFolder subFolder, Folder parentFolder) async {
     try {
-      final dir = Directory('$savePath/${parentFolder.name}/${subFolder.name}');
-      if (await dir.exists()) await dir.delete(recursive: true);
+      await repository.deleteSubFolderDirectory(parentFolder.name, subFolder.name);
       
       parentFolder.subFolders.removeWhere((sf) => sf.id == subFolder.id);
       expandedTiles.remove(subFolder.id);
     } catch (e) { 
-      _lastError = 'Delete failed: $e'; 
-      debugPrint(_lastError); 
+      debugPrint('Delete failed: $e'); 
     }
     notifyListeners();
   }
 
-    Future<void> createNote(String name, Folder folder, {SubFolder? subFolder}) async {
+
+  Future<void> createNote(String name, Folder folder, {SubFolder? subFolder}) async {
     final newNote = Note(id: 'n_${name.hashCode}_${(subFolder?.name ?? folder.name).hashCode}', name: name);
     if (subFolder != null) {
       subFolder.notes.add(newNote);
@@ -427,54 +656,108 @@ class AppData extends ChangeNotifier {
       folder.notes.add(newNote);
       expandedTiles.add(folder.id);
     }
-    await saveNote(newNote, subFolder, folder);
-    notifyListeners();
-  }
-
-    Future<void> renameNote(Note note, String newName, Folder folder, {SubFolder? subFolder}) async {
     try {
-      final oldPath = await _getNoteFilePath(note, subFolder, folder);
-      final newDir = subFolder != null
-          ? Directory('$savePath/${folder.name}/${subFolder.name}')
-          : Directory('$savePath/${folder.name}');
-      if (!await newDir.exists()) await newDir.create(recursive: true);
-      
-      final newPath = '${newDir.path}/$newName.md';
-      final oldFile = File(oldPath);
-      
-      if (await oldFile.exists()) await oldFile.rename(newPath);
-      note.name = newName;
-    } catch (e) { 
-      _lastError = 'Rename failed: $e'; 
-      debugPrint(_lastError); 
+      await repository.saveNote(newNote, subFolder, folder);
+    } catch (e) {
+     debugPrint("Create note save failed: $e");
     }
     notifyListeners();
   }
 
-  Future<void> deleteNote(Note note, Folder folder, {SubFolder? subFolder}) async {
+
+  Future<void> createRootNote(String name) async {
+    final newNote = Note(id: 'n_root_${name.hashCode}', name: name);
+    rootNotes.add(newNote);
     try {
-      final path = await _getNoteFilePath(note, subFolder, folder);
-      if (await File(path).exists()) await File(path).delete();
+      await repository.saveNote(newNote, null, null);
+    } catch (e) {
+     debugPrint("Create root note save failed: $e");
+    }
+    notifyListeners();
+  }
+
+
+  Future<void> renameNote(NoteContext context, String newName) async {
+    try {
+      await repository.renameNoteFile(context.note, newName, context.subFolder, context.folder);
+      context.note.name = newName;
+    } catch (e) { 
+      debugPrint('Rename failed: $e'); 
+    }
+    notifyListeners();
+  }
+
+
+  Future<void> deleteNote(NoteContext context) async {
+    try {
+      await repository.deleteNoteFile(context.note, context.subFolder, context.folder);
       
-      if (subFolder != null) {
-        subFolder.notes.removeWhere((n) => n.id == note.id);
+      if (context.isRootNote) {
+        rootNotes.removeWhere((n) => n.id == context.note.id);
+      } else if (context.subFolder != null) {
+        context.subFolder!.notes.removeWhere((n) => n.id == context.note.id);
       } else {
-        folder.notes.removeWhere((n) => n.id == note.id);
+        context.folder!.notes.removeWhere((n) => n.id == context.note.id);
       }
     } catch (e) { 
-      _lastError = 'Delete failed: $e'; 
-      debugPrint(_lastError); 
+      debugPrint('Delete failed: $e'); 
     }
     notifyListeners();
   }
+
+
+  Future<void> togglePin(NoteContext context, Post post) async {
+    post.isPinned = !post.isPinned;
+    try {
+      await repository.saveNote(context.note, context.subFolder, context.folder);
+    } catch (e) {
+     debugPrint("Toggle pin save failed: $e");
+    }
+  }
+
 
   void updatePostContent(Post post, String newContent) {
     post.content = newContent;
     notifyListeners();
   }
+
+
+  /// Unified method to paste clipboard content into a specific note.
+  Future<bool> pasteClipboardToNote(String targetNoteId) async {
+    final clipboardData = await Clipboard.getData(Clipboard.kTextPlain);
+    final text = clipboardData?.text;
+
+
+    if (text == null || text.isEmpty) return false;
+
+
+    final context = findNoteById(targetNoteId);
+    
+    if (context != null) {
+      final newPost = Post(
+        id: DateTime.now().microsecondsSinceEpoch.toString(),
+        content: text,
+        createdAt: DateTime.now(),
+      );
+      context.note.posts.insert(0, newPost);
+      
+      try {
+        await repository.saveNote(context.note, context.subFolder, context.folder);
+        notifyListeners(); // Update UI to show new post if visible
+        return true;
+      } catch (e) {
+        debugPrint("Paste save failed: $e");
+        return false;
+      }
+    } 
+    return false; // Note not found
+  }
 }
 
+
+
 // ================= THEME =================
+
 
 ThemeData darkSlipTheme() => ThemeData(
   brightness: Brightness.dark,
@@ -499,12 +782,133 @@ ThemeData darkSlipTheme() => ThemeData(
   ),
 );
 
+
+
 // ================= SCREENS =================
+
+
+/// Shared Recent Notes dialog — usable from any screen.
+void showRecentNotesDialog(BuildContext context) {
+  bool pasteToEnabled = false;
+
+  showDialog(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setDialogState) => AlertDialog(
+        backgroundColor: Colors.grey[900],
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Recent Notes', style: TextStyle(color: Colors.white)),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 370,
+          child: Consumer<AppData>(
+            builder: (ctx, data, _) => GridView.count(
+              crossAxisCount: 3,
+              mainAxisSpacing: 10,
+              crossAxisSpacing: 10,
+              children: List.generate(9, (index) {
+                if (index < data.recentNotes.length) {
+                  final recent = data.recentNotes[index];
+                  return _buildRecentTile(recent, ctx, pasteToEnabled);
+                } else {
+                  return Container(
+                    decoration: BoxDecoration(
+                      color: Colors.grey[850],
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.grey[700]!),
+                    ),
+                    child: const Center(child: Text('Empty', style: TextStyle(color: Colors.grey, fontSize: 12))),
+                  );
+                }
+              }),
+            ),
+          ),
+        ),
+        actions: [
+          Row(
+            children: [
+              Checkbox(
+                value: pasteToEnabled,
+                activeColor: Colors.white70,
+                checkColor: Colors.grey[900],
+                onChanged: (val) {
+                  pasteToEnabled = val ?? false;
+                  setDialogState(() {});
+                },
+              ),
+              const Text('Paste To', style: TextStyle(color: Colors.white70)),
+            ],
+          ),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
+        ],
+      ),
+    ),
+  );
+}
+
+
+Widget _buildRecentTile(RecentNote recent, BuildContext ctx, bool pasteToEnabled) {
+  return GestureDetector(
+    onTap: () async {
+      final data = ctx.read<AppData>();
+
+      // Use the centralized search helper
+      final noteCtx = data.findNoteById(recent.noteId);
+
+
+      if (noteCtx != null) {
+        Navigator.pop(ctx);
+
+        // Update recent history with current location info
+        data.addRecentNote(
+          noteCtx.folder?.name,
+          noteCtx.subFolder?.name,
+          noteCtx.note.id,
+          noteCtx.note.name
+        );
+
+
+        // If paste to is enabled, use the centralized paste method
+        if (pasteToEnabled) {
+         final success = await data.pasteClipboardToNote(noteCtx.note.id);
+         if (!success && ctx.mounted) {
+           ScaffoldMessenger.of(ctx).showSnackBar(
+             const SnackBar(content: Text('Failed to paste. Clipboard empty or note not found.')),
+           );
+         }
+        }
+
+
+        if (ctx.mounted) {
+          Navigator.push(ctx, MaterialPageRoute(builder: (_) => NoteScreen(context: noteCtx)));
+        }
+      } else {
+       // Note might have been deleted from disk but still in recent history
+       if (ctx.mounted) {
+         ScaffoldMessenger.of(ctx).showSnackBar(
+           const SnackBar(content: Text('Note not found or deleted.')),
+         );
+       }
+      }
+    },
+    child: Container(
+      decoration: BoxDecoration(
+        color: Colors.grey[800],
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey[700]!),
+      ),
+      child: Center(
+        child: Text(recent.noteName, style: const TextStyle(color: Colors.white70, fontSize: 13), textAlign: TextAlign.center),
+      ),
+    ),
+  );
+}
+
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
-  // Helper to show standard create/rename dialogs
+
   void _showInputDialog(BuildContext ctx, String title, TextEditingController controller, Function(String) onConfirm) {
     showDialog(
       context: ctx,
@@ -528,6 +932,7 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
+
   void _showItemMenu(BuildContext ctx, String title, {required Function() onRename, required Function() onDelete}) {
     showMenu(
       context: ctx,
@@ -542,138 +947,6 @@ class HomeScreen extends StatelessWidget {
     });
   }
 
-        void _showRecentNotesDialog(BuildContext context) {
-    bool pasteToEnabled = false;
-    
-    showDialog(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialogState) => AlertDialog(
-          backgroundColor: Colors.grey[900],
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Text('Recent Notes', style: TextStyle(color: Colors.white)),
-                    content: SizedBox(
-            width: double.maxFinite,
-            height: 370,
-            child: Consumer<AppData>(
-              builder: (ctx, data, _) => GridView.count(
-                crossAxisCount: 3,
-                mainAxisSpacing: 10,
-                crossAxisSpacing: 10,
-                children: List.generate(9, (index) {
-                  if (index < data.recentNotes.length) {
-                    final recent = data.recentNotes[index];
-                    return _buildRecentTile(recent, ctx, pasteToEnabled);
-                  } else {
-                    return Container(
-                      decoration: BoxDecoration(
-                        color: Colors.grey[850],
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: Colors.grey[700]!),
-                      ),
-                      child: const Center(child: Text('Empty', style: TextStyle(color: Colors.grey, fontSize: 12))),
-                    );
-                  }
-                }),
-              ),
-            ),
-          ),
-          actions: [
-            Row(
-              children: [
-                Checkbox(
-                  value: pasteToEnabled,
-                  activeColor: Colors.white70,
-                  checkColor: Colors.grey[900],
-                  onChanged: (val) {
-                    pasteToEnabled = val ?? false;
-                    setDialogState(() {});
-                  },
-                ),
-                const Text('Paste To', style: TextStyle(color: Colors.white70)),
-              ],
-            ),
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
-          ],
-        ),
-      ),
-    );
-  }
-
-        Widget _buildRecentTile(RecentNote recent, BuildContext ctx, bool pasteToEnabled) {
-    return GestureDetector(
-      onTap: () async {
-        final data = ctx.read<AppData>();
-
-        // Find the note in the current state to navigate
-        for (var f in data.folders) {
-          if (f.name == recent.folderName) {
-            Note? foundNote;
-            SubFolder? foundSubFolder;
-
-            // If subFolder is specified, search there
-            if (recent.subFolderName != null) {
-              for (var sf in f.subFolders) {
-                if (sf.name == recent.subFolderName) {
-                  for (var n in sf.notes) {
-                    if (n.id == recent.noteId) {
-                      foundNote = n;
-                      foundSubFolder = sf;
-                      break;
-                    }
-                  }
-                }
-              }
-            } else {
-              // Search in folder-level notes
-              for (var n in f.notes) {
-                if (n.id == recent.noteId) {
-                  foundNote = n;
-                  break;
-                }
-              }
-            }
-
-                        if (foundNote != null) {
-                          final note = foundNote; // Non-null assertion within the block
-                          Navigator.pop(ctx);
-                          data.addRecentNote(f.name, foundSubFolder?.name, note.id, note.name);
-
-                          // If paste to is enabled, paste clipboard content first
-                          if (pasteToEnabled) {
-                            final clipboardData = await Clipboard.getData(Clipboard.kTextPlain);
-                            final clipboardText = clipboardData?.text;
-                            if (clipboardText != null && clipboardText.isNotEmpty) {
-                              final post = Post(
-                                id: DateTime.now().microsecondsSinceEpoch.toString(),
-                                content: clipboardText,
-                                createdAt: DateTime.now(),
-                              );
-                              note.posts.insert(0, post);
-                              await data.saveNote(note, foundSubFolder, f);
-                            }
-                          }
-
-                          if (ctx.mounted) {
-                            Navigator.push(ctx, MaterialPageRoute(builder: (_) => NoteScreen(folder: f, subFolder: foundSubFolder, note: note)));
-                          }
-                          return;
-                        }
-          }
-        }
-      },
-      child: Container(
-        decoration: BoxDecoration(
-          color: Colors.grey[800],
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Colors.grey[700]!),
-        ),
-        child: Center(
-          child: Text(recent.noteName, style: const TextStyle(color: Colors.white70, fontSize: 13), textAlign: TextAlign.center),
-        ),
-      ),
-    );
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -708,55 +981,86 @@ class HomeScreen extends StatelessWidget {
           ),
         ),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.grid_view),
-            onPressed: () => _showRecentNotesDialog(context),
-            tooltip: 'Recent Notes',
-          ),
-          Consumer<AppData>(
-            builder: (ctx, data, _) => IconButton(
-              icon: const Icon(Icons.refresh),
-              onPressed: () async {
-                await data.syncFromDisk();
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Folders refreshed'), duration: Duration(seconds: 1)),
-                  );
-                }
-              },
-              tooltip: 'Refresh Folders',
+            IconButton(
+                icon: const Icon(Icons.grid_view),
+                onPressed: () => showRecentNotesDialog(context),
+                tooltip: 'Recent Notes',
             ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.create_new_folder),
-            onPressed: () {
-              final ctrl = TextEditingController();
-              _showInputDialog(context, 'New Folder', ctrl, (name) => context.read<AppData>().createFolder(name));
-            },
-            tooltip: 'New Folder',
-          ),
-          IconButton(
-            icon: const Icon(Icons.settings), 
-            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen())),
-          ),
+            // Copy to Last Note Button
+            Consumer<AppData>(
+              builder: (ctx, data, _) {
+                final hasRecentNote = data.recentNotes.isNotEmpty;
+                return IconButton(
+                  icon: const Icon(Icons.content_paste_go),
+                  color: hasRecentNote ? Colors.white70 : Colors.grey[600],
+                  onPressed: !hasRecentNote 
+                    ? null 
+                    : () async {
+                        final lastNote = data.recentNotes.first;
+                        final success = await data.pasteClipboardToNote(lastNote.noteId);
+                        
+                        if (ctx.mounted) {
+                          if (success) {
+                            ScaffoldMessenger.of(ctx).showSnackBar(
+                              SnackBar(content: Text('Pasted to ${lastNote.noteName}'), duration: Duration(seconds: 1)),
+                            );
+                          } else {
+                           ScaffoldMessenger.of(ctx).showSnackBar(
+                             const SnackBar(content: Text('Failed to paste. Clipboard empty or note not found.'), duration: Duration(seconds: 2)),
+                           );
+                          }
+                        }
+                      },
+                  tooltip: 'Copy to Last Note',
+                );
+              },
+            ),
+            // Add Root Note Button
+            IconButton(
+                icon: const Icon(Icons.note_add),
+                onPressed: () {
+                    final ctrl = TextEditingController();
+                    _showInputDialog(context, 'New Root Note', ctrl, (name) => context.read<AppData>().createRootNote(name));
+                },
+                tooltip: 'New Root Note',
+            ),
+            IconButton(
+                icon: const Icon(Icons.create_new_folder),
+                onPressed: () {
+                    final ctrl = TextEditingController();
+                    _showInputDialog(context, 'New Folder', ctrl, (name) => context.read<AppData>().createFolder(name));
+                },
+                tooltip: 'New Folder',
+            ),
+            IconButton(
+                icon: const Icon(Icons.settings), 
+                onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen())),
+            ),
         ],
       ),
       body: Consumer<AppData>(
         builder: (ctx, data, _) {
-          if (data._lastError != null) {
-            return Center(child: Text('Storage Error:\n${data._lastError}', textAlign: TextAlign.center, style: const TextStyle(color: Colors.red)));
+          if (!data.storageReady) {
+           return Center(child: Text('Storage Error:\n${data._lastError ?? "Initializing..."}', textAlign: TextAlign.center, style: const TextStyle(color: Colors.red)));
           }
           
+          // Display Root Notes first, then Folders
+          final allItems = [
+            ...data.rootNotes.map((note) => _buildNoteTile(ctx, data, NoteContext(note: note))),
+            ...data.folders.map((folder) => _buildFolderTile(ctx, data, folder)),
+          ];
+
+
           return ListView.builder(
-            itemCount: data.folders.length,
-            itemBuilder: (_, i) => _buildFolderTile(ctx, data, data.folders[i]),
+            itemCount: allItems.length,
+            itemBuilder: (_, i) => allItems[i],
           );
         },
       ),
     );
   }
 
-    // Extracted Folder Tile Builder for cleaner code
+
   Widget _buildFolderTile(BuildContext ctx, AppData data, Folder folder) {
     return GestureDetector(
       onLongPress: () => _showItemMenu(ctx, 'Folder', 
@@ -800,7 +1104,7 @@ class HomeScreen extends StatelessWidget {
           },
         ),
         children: [
-          ...folder.notes.map((note) => _buildNoteTile(ctx, data, folder, note)),
+          ...folder.notes.map((note) => _buildNoteTile(ctx, data, NoteContext(note: note, folder: folder))),
           if (folder.subFolders.isEmpty && folder.notes.isEmpty)
             const Padding(padding: EdgeInsets.all(16), child: Text('No subfolders or notes yet.', style: TextStyle(color: Colors.grey))),
           ...folder.subFolders.map((sf) => _buildSubFolderTile(ctx, data, folder, sf)),
@@ -809,7 +1113,7 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  // Extracted SubFolder Tile Builder
+
   Widget _buildSubFolderTile(BuildContext ctx, AppData data, Folder parentFolder, SubFolder subFolder) {
     return GestureDetector(
       onLongPress: () => _showItemMenu(ctx, 'SubFolder',
@@ -818,7 +1122,7 @@ class HomeScreen extends StatelessWidget {
           showDialog(context: ctx, builder: (_) => AlertDialog(
             backgroundColor: Colors.grey[900],
             title: const Text('Delete SubFolder?', style: TextStyle(color: Colors.white)),
-            content: Text('This will permanently delete "${subFolder.name}" and all its notes.', style: const TextStyle(color: Colors.white70)),
+            content: Text('This will permanently delete "${subFolder.name}" and its notes.', style: const TextStyle(color: Colors.white70)),
             actions: [
               TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
               TextButton(
@@ -845,27 +1149,27 @@ class HomeScreen extends StatelessWidget {
         children: [
           if (subFolder.notes.isEmpty)
             const Padding(padding: EdgeInsets.all(16), child: Text('No notes yet.', style: TextStyle(color: Colors.grey))),
-          ...subFolder.notes.map((note) => _buildNoteTile(ctx, data, parentFolder, note, subFolder: subFolder)),
+          ...subFolder.notes.map((note) => _buildNoteTile(ctx, data, NoteContext(note: note, folder: parentFolder, subFolder: subFolder))),
         ],
       ),
     );
   }
 
-    // Extracted Note Tile Builder (subFolder is optional for folder-level notes)
-  Widget _buildNoteTile(BuildContext ctx, AppData data, Folder folder, Note note, {SubFolder? subFolder}) {
+
+  Widget _buildNoteTile(BuildContext ctx, AppData data, NoteContext context) {
     return GestureDetector(
       onLongPress: () => _showItemMenu(ctx, 'Note',
-        onRename: () => _showInputDialog(ctx, 'Rename Note', TextEditingController(text: note.name), (name) => data.renameNote(note, name, folder, subFolder: subFolder)),
+        onRename: () => _showInputDialog(ctx, 'Rename Note', TextEditingController(text: context.note.name), (name) => data.renameNote(context, name)),
         onDelete: () {
           showDialog(context: ctx, builder: (_) => AlertDialog(
             backgroundColor: Colors.grey[900],
             title: const Text('Delete Note?', style: TextStyle(color: Colors.white)),
-            content: Text('This will permanently delete "${note.name}" and its file.', style: const TextStyle(color: Colors.white70)),
+            content: Text('This will permanently delete "${context.note.name}" and its file.', style: const TextStyle(color: Colors.white70)),
             actions: [
               TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
               TextButton(
                 onPressed: () { 
-                  data.deleteNote(note, folder, subFolder: subFolder); 
+                  data.deleteNote(context); 
                   Navigator.pop(ctx); 
                 }, 
                 style: ButtonStyle(foregroundColor: WidgetStateProperty.all(Colors.red)), 
@@ -876,35 +1180,37 @@ class HomeScreen extends StatelessWidget {
         }
       ),
       child: ListTile(
-        leading: const Icon(Icons.note_outlined, color: Colors.white70),
-        title: Text(note.name),
-        subtitle: Text('${note.posts.length} posts'),
+        leading: Icon(context.isRootNote ? Icons.note : Icons.note_outlined, color: Colors.white70),
+        title: Text(context.note.name),
+        subtitle: Text('${context.note.posts.length} posts'),
         onTap: () {
-          data.addRecentNote(folder.name, subFolder?.name, note.id, note.name);
-          Navigator.push(ctx, MaterialPageRoute(builder: (_) => NoteScreen(folder: folder, subFolder: subFolder, note: note)));
+          data.addRecentNote(context.folder?.name, context.subFolder?.name, context.note.id, context.note.name);
+          Navigator.push(ctx, MaterialPageRoute(builder: (_) => NoteScreen(context: context)));
         },
       ),
     );
   }
 }
 
+
+
 class NoteScreen extends StatefulWidget {
-  final Folder folder;
-  final SubFolder? subFolder; // null means note is directly in the folder
-  final Note note;
+  final NoteContext context;
   
-  const NoteScreen({super.key, required this.folder, this.subFolder, required this.note});
+  const NoteScreen({super.key, required this.context});
+
 
   @override
   State<NoteScreen> createState() => _NoteScreenState();
 }
+
 
 class _NoteScreenState extends State<NoteScreen> {
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   String? _highlightedPostId;
   Timer? _highlightTimer;
-  Post? _editingPost; // Tracks which post is being edited inline
+  Post? _editingPost; 
 
 
   @override
@@ -913,8 +1219,10 @@ class _NoteScreenState extends State<NoteScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadNote());
   }
 
+
   Future<void> _loadNote() async {
-    await context.read<AppData>().loadNote(widget.note, widget.subFolder, widget.folder);
+    // Reload note content from disk to ensure we have the latest data
+    await context.read<AppData>().repository.loadNote(widget.context.note, widget.context.subFolder, widget.context.folder);
     if (mounted) {
       setState(() {}); 
       
@@ -926,6 +1234,7 @@ class _NoteScreenState extends State<NoteScreen> {
     }
   }
 
+
   void _copyToClipboard(String text) {
     Clipboard.setData(ClipboardData(text: text));
     if (mounted) {
@@ -935,38 +1244,30 @@ class _NoteScreenState extends State<NoteScreen> {
     }
   }
 
-    // Formatting Helpers
 
-  /// Prepares markdown content for display. Preserves single newlines within
-  /// markdown tables (to keep table structure intact) while converting single
-  /// newlines to double newlines in regular text (for proper paragraph spacing).
   String _prepareMarkdownContent(String content) {
     final lines = content.split('\n');
     final result = <String>[];
     bool inTable = false;
 
+
     for (int i = 0; i < lines.length; i++) {
       final line = lines[i];
-      // A table line starts with | and contains at least one more |
       final isTableLine = RegExp(r'^\s*\|.*\|\s*$').hasMatch(line);
-      // A table separator line like |---|---|
       final isSeparatorLine = RegExp(r'^\s*\|[\s\-:|]+\|$').hasMatch(line);
+
 
       if (isTableLine || isSeparatorLine) {
         inTable = true;
         result.add(line);
       } else if (inTable && line.trim().isEmpty) {
-        // Blank line after table — end the table context
         inTable = false;
-        result.add(''); // keep one blank line as paragraph separator
+        result.add(''); 
       } else if (inTable) {
-        // We're inside a table but hit a non-table, non-blank line.
-        // This is unlikely but treat it as ending the table.
         inTable = false;
         result.add('');
         result.add(line);
       } else {
-        // Regular text — add extra blank line for paragraph spacing
         if (line.isNotEmpty) {
           result.add(line);
           result.add('');
@@ -976,48 +1277,21 @@ class _NoteScreenState extends State<NoteScreen> {
       }
     }
 
+
     return result.join('\n');
   }
 
-    void _insertTableBlock() {
+
+  void _insertCodeBlock() {
     final currentText = _controller.text;
     final selection = _controller.selection;
-
-    const tableSyntax = '| Column1 | Column2 | Column3 |\n|---------|---------|---------|\n| Cell1   | Cell2   | Cell3   |';
-
-    // Use the valid cursor position, defaulting to end of text if selection is invalid (-1)
-    final insertPos = selection.isValid ? selection.start : currentText.length;
-
-    String newText;
-    int newCursorPos;
-
-    if (selection.isCollapsed) {
-      newText = currentText.replaceRange(insertPos, insertPos, tableSyntax);
-      newCursorPos = insertPos + 14; // position cursor in "Column 1" area
-    } else {
-      newText = currentText.replaceRange(selection.start, selection.end, tableSyntax);
-      newCursorPos = selection.start + 14;
-    }
-
-    _controller.value = TextEditingValue(
-      text: newText,
-      selection: TextSelection.collapsed(offset: newCursorPos),
-    );
-
-    FocusScope.of(context).requestFocus(FocusNode());
-  }
-
-    void _insertCodeBlock() {
-    final currentText = _controller.text;
-    final selection = _controller.selection;
-
     const codeBlockSyntax = '```\n\n```';
-
-    // Use the valid cursor position, defaulting to end of text if selection is invalid (-1)
     final insertPos = selection.isValid ? selection.start : currentText.length;
+
 
     String newText;
     int newCursorPos;
+
 
     if (selection.isCollapsed) {
       newText = currentText.replaceRange(insertPos, insertPos, codeBlockSyntax);
@@ -1028,23 +1302,24 @@ class _NoteScreenState extends State<NoteScreen> {
       newCursorPos = selection.start + 4;
     }
 
+
     _controller.value = TextEditingValue(
       text: newText,
       selection: TextSelection.collapsed(offset: newCursorPos),
     );
-
     FocusScope.of(context).requestFocus(FocusNode());
   }
 
-    void _insertQuoteBlock() {
+
+  void _insertQuoteBlock() {
     final currentText = _controller.text;
     final selection = _controller.selection;
-
-    // Use the valid cursor position, defaulting to end of text if selection is invalid (-1)
     final insertPos = selection.isValid ? selection.start : currentText.length;
+
 
     String newText;
     int newCursorPos;
+
 
     if (selection.isCollapsed) {
       const quoteSyntax = '> ';
@@ -1053,43 +1328,53 @@ class _NoteScreenState extends State<NoteScreen> {
     } else {
       final selectedText = currentText.substring(selection.start, selection.end);
       final quotedLines = selectedText.split('\n').map((line) => '> $line').join('\n');
-
       newText = currentText.replaceRange(selection.start, selection.end, quotedLines);
       newCursorPos = selection.start + 2;
     }
+
 
     _controller.value = TextEditingValue(
       text: newText,
       selection: TextSelection.collapsed(offset: newCursorPos),
     );
-
     FocusScope.of(context).requestFocus(FocusNode());
   }
 
-    void _saveOrAddPost() {
+
+  void _saveOrAddPost() {
     final text = _controller.text.trim();
     if (text.isEmpty) return;
 
+
     if (_editingPost != null) {
-      // Saving an edit to an existing post
       context.read<AppData>().updatePostContent(_editingPost!, text);
-      context.read<AppData>().saveNote(widget.note, widget.subFolder, widget.folder);
+      // Save immediately on edit save? Or wait for explicit save? 
+      // Current behavior: saves to disk.
+       try {
+        context.read<AppData>().repository.saveNote(widget.context.note, widget.context.subFolder, widget.context.folder);
+       } catch(e) { debugPrint("Save failed"); }
+       
       _editingPost = null;
     } else {
-      // Adding a new post
       final post = Post(
         id: DateTime.now().microsecondsSinceEpoch.toString(),
         content: text,
         createdAt: DateTime.now()
       );
-      widget.note.posts.insert(0, post);
-      context.read<AppData>().saveNote(widget.note, widget.subFolder, widget.folder);
+      widget.context.note.posts.insert(0, post);
+      
+       try {
+        context.read<AppData>().repository.saveNote(widget.context.note, widget.context.subFolder, widget.context.folder);
+       } catch(e) { debugPrint("Save failed"); }
     }
+
 
     _controller.clear();
     FocusScope.of(context).unfocus();
 
+
     if (mounted) setState(() {});
+
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
@@ -1098,6 +1383,7 @@ class _NoteScreenState extends State<NoteScreen> {
     });
   }
 
+
   void _cancelEdit() {
     _controller.clear();
     _editingPost = null;
@@ -1105,14 +1391,15 @@ class _NoteScreenState extends State<NoteScreen> {
     if (mounted) setState(() {});
   }
 
+
   void _editPost(Post post) {
-    // Populate the text field with the post content for inline editing
     _controller.text = post.content;
     _controller.selection = TextSelection.collapsed(offset: _controller.text.length);
     _editingPost = post;
     FocusScope.of(context).requestFocus(FocusNode());
     if (mounted) setState(() {});
   }
+
 
   void _jumpToAndHighlight(Post post) {
     setState(() => _highlightedPostId = post.id);
@@ -1122,7 +1409,8 @@ class _NoteScreenState extends State<NoteScreen> {
       if (mounted) setState(() => _highlightedPostId = null);
     });
 
-    final index = widget.note.posts.indexWhere((p) => p.id == post.id);
+
+    final index = widget.context.note.posts.indexWhere((p) => p.id == post.id);
     if (index != -1 && mounted) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _scrollController.animateTo(
@@ -1134,8 +1422,9 @@ class _NoteScreenState extends State<NoteScreen> {
     }
   }
 
+
   void _showPinnedDialog() {
-    final pinned = widget.note.posts.where((p) => p.isPinned).toList();
+    final pinned = widget.context.note.posts.where((p) => p.isPinned).toList();
     
     showDialog(
       context: context,
@@ -1165,6 +1454,7 @@ class _NoteScreenState extends State<NoteScreen> {
     );
   }
 
+
   @override
   void dispose() {
     _controller.dispose();
@@ -1173,29 +1463,30 @@ class _NoteScreenState extends State<NoteScreen> {
     super.dispose();
   }
 
+
   @override
   Widget build(BuildContext context) {
     final bottomPadding = MediaQuery.of(context).padding.bottom;
     
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.note.name),
+        title: Text(widget.context.note.name),
         actions: [
           IconButton(icon: const Icon(Icons.push_pin), onPressed: _showPinnedDialog, tooltip: 'View Pinned'),
           IconButton(
-            icon: const Icon(Icons.code), 
-            onPressed: _insertCodeBlock, 
+            icon: const Icon(Icons.code),
+            onPressed: _insertCodeBlock,
             tooltip: 'Insert Code Block'
           ),
-                              IconButton(
+                  IconButton(
             icon: const Icon(Icons.format_quote),
             onPressed: _insertQuoteBlock,
             tooltip: 'Insert Quote/Highlight'
           ),
-                    IconButton(
-            icon: const Icon(Icons.table_chart),
-            onPressed: _insertTableBlock,
-            tooltip: 'Insert Table'
+              IconButton(
+            icon: const Icon(Icons.grid_view),
+            onPressed: () => showRecentNotesDialog(context),
+            tooltip: 'Recent Notes',
           ),
         ],
       ),
@@ -1206,44 +1497,44 @@ class _NoteScreenState extends State<NoteScreen> {
               controller: _scrollController,
               reverse: true,
               padding: const EdgeInsets.all(12),
-              itemCount: widget.note.posts.length,
-              itemBuilder: (_, i) => _buildPostItem(widget.note.posts[i]),
+              itemCount: widget.context.note.posts.length,
+              itemBuilder: (_, i) => _buildPostItem(widget.context.note.posts[i]),
             ),
           ),
-                              SafeArea(
+                  SafeArea(
             top: false,
             child: Container(
               padding: EdgeInsets.only(left: 8, right: 8, bottom: bottomPadding + 4),
               color: Colors.grey[900],
               constraints: const BoxConstraints(maxHeight: 250),
               child: Row(children: [
-                                if (_editingPost != null)
-                  IconButton(
-                    icon: const Icon(Icons.close, color: Colors.white70),
-                    onPressed: _cancelEdit,
-                    tooltip: 'Cancel Edit',
-                  ),
-                Expanded(
-                  child: TextField(
-                    controller: _controller,
-                    maxLines: null,
-                    minLines: 1,
-                    keyboardType: TextInputType.multiline,
-                    textInputAction: TextInputAction.newline,
-                    decoration: InputDecoration(
-                      hintText: _editingPost != null ? 'Editing post...' : 'Type a note...',
-                    ),
-                  ),
+                              if (_editingPost != null)
+                IconButton(
+                  icon: const Icon(Icons.close, color: Colors.white70),
+                  onPressed: _cancelEdit,
+                  tooltip: 'Cancel Edit',
                 ),
-                                if (_editingPost != null)
-                  IconButton(
-                    icon: const Icon(Icons.check, color: Colors.white70),
-                    onPressed: _saveOrAddPost,
-                    tooltip: 'Save Edit',
-                  )
-                else
-                  IconButton(icon: const Icon(Icons.send, color: Colors.white70), onPressed: _saveOrAddPost),
-              ]),
+            Expanded(
+              child: TextField(
+                controller: _controller,
+                maxLines: null,
+                minLines: 1,
+                keyboardType: TextInputType.multiline,
+                textInputAction: TextInputAction.newline,
+                decoration: InputDecoration(
+                  hintText: _editingPost != null ? 'Editing post...' : 'Type a note...',
+                ),
+              ),
+            ),
+                              if (_editingPost != null)
+                IconButton(
+                  icon: const Icon(Icons.check, color: Colors.white70),
+                  onPressed: _saveOrAddPost,
+                  tooltip: 'Save Edit',
+                )
+              else
+                IconButton(icon: const Icon(Icons.send, color: Colors.white70), onPressed: _saveOrAddPost),
+            ]),
             ),
           ),
         ],
@@ -1251,9 +1542,10 @@ class _NoteScreenState extends State<NoteScreen> {
     );
   }
 
-  // Extracted Post Item Builder
+
   Widget _buildPostItem(Post post) {
     final isHighlighted = post.id == _highlightedPostId;
+
 
     return Dismissible(
       key: ValueKey(post.id),
@@ -1265,9 +1557,14 @@ class _NoteScreenState extends State<NoteScreen> {
         child: const Icon(Icons.delete, color: Colors.white),
       ),
       onDismissed: (direction) {
-        widget.note.posts.removeWhere((p) => p.id == post.id);
+        widget.context.note.posts.removeWhere((p) => p.id == post.id);
         setState(() {});
-        context.read<AppData>().saveNote(widget.note, widget.subFolder, widget.folder);
+        
+         try {
+           context.read<AppData>().repository.saveNote(widget.context.note, widget.context.subFolder, widget.context.folder);
+         } catch(e) { debugPrint("Delete save failed"); }
+
+
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Post deleted'), duration: Duration(seconds: 1)),
@@ -1291,17 +1588,17 @@ class _NoteScreenState extends State<NoteScreen> {
                 IconButton(
                   icon: Icon(Icons.push_pin, color: post.isPinned ? Colors.amber : Colors.grey[600]),
                   onPressed: () async {
-                    await context.read<AppData>().togglePin(widget.note, post, widget.subFolder, widget.folder);
+                    await context.read<AppData>().togglePin(widget.context, post);
                     if (mounted) setState(() {});
                   },
                 ),
               ]),
-                            MarkdownBody(
+                      MarkdownBody(
                 data: _prepareMarkdownContent(post.content),
                 styleSheet: MarkdownStyleSheet(
                   p: const TextStyle(height: 1.3),
                   a: const TextStyle(color: Colors.blueAccent, decoration: TextDecoration.underline),
-                                    tableBorder: TableBorder.all(color: Colors.white, width: 1),
+                                  tableBorder: TableBorder.all(color: Colors.white, width: 1),
                   tableCellsPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   blockquoteDecoration: BoxDecoration(
                     border: Border(left: BorderSide(color: Colors.grey[700]!, width: 4)),
@@ -1331,15 +1628,34 @@ class _NoteScreenState extends State<NoteScreen> {
   }
 }
 
+
+
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
+
 
   @override
   Widget build(BuildContext context) {
     final data = context.watch<AppData>();
     
     return Scaffold(
-      appBar: AppBar(title: const Text('Settings')),
+      appBar: AppBar(
+        title: const Text('Settings'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: () async {
+              await data.retryStorageInit(); // This calls syncFromDisk internally
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Folders refreshed'), duration: Duration(seconds: 1)),
+                );
+              }
+            },
+            tooltip: 'Refresh Folders',
+          ),
+        ],
+      ),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -1362,18 +1678,18 @@ class SettingsScreen extends StatelessWidget {
   }
 }
 
+
+
 class OnboardingScreen extends StatelessWidget {
   const OnboardingScreen({super.key});
 
-  
 
-    @override
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: Consumer<AppData>(
         builder: (ctx, data, _) {
           if (data.onboardingCompleted) {
-            // Onboarding done, navigate to home
             WidgetsBinding.instance.addPostFrameCallback((_) {
               Navigator.of(ctx).pushReplacement(
                 MaterialPageRoute(builder: (_) => const HomeScreen()),
@@ -1382,13 +1698,13 @@ class OnboardingScreen extends StatelessWidget {
             return Container();
           }
 
+
           return SafeArea(
             child: Padding(
               padding: const EdgeInsets.all(24.0),
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  // Icon
                   Icon(
                     Icons.drive_folder_upload_rounded,
                     size: 120,
@@ -1396,7 +1712,7 @@ class OnboardingScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: 32),
 
-                  // Title
+
                   const Text(
                     'Welcome to darkslip',
                     style: TextStyle(
@@ -1407,7 +1723,7 @@ class OnboardingScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: 16),
 
-                  // Description
+
                   Text(
                     'darkslip saves your notes as markdown files on your device. To get started, we need storage access.',
                     textAlign: TextAlign.center,
@@ -1415,7 +1731,7 @@ class OnboardingScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: 48),
 
-                                    // Primary action button
+
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton.icon(
@@ -1435,7 +1751,7 @@ class OnboardingScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: 16),
 
-                  // Retry button - check if storage was granted externally
+
                   SizedBox(
                     width: double.infinity,
                     child: OutlinedButton.icon(
@@ -1455,7 +1771,7 @@ class OnboardingScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: 48),
 
-                  // Info card
+
                   Container(
                     padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
@@ -1494,7 +1810,10 @@ class OnboardingScreen extends StatelessWidget {
   }
 }
 
+
+
 // ================= APP ENTRY =================
+
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -1502,11 +1821,14 @@ void main() {
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: [SystemUiOverlay.top, SystemUiOverlay.bottom]);
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
 
+
   runApp(ChangeNotifierProvider(create: (_) => AppData()..init(), child: const DarkSlipApp()));
 }
 
+
 class DarkSlipApp extends StatelessWidget {
   const DarkSlipApp({super.key});
+
 
   @override
   Widget build(BuildContext context) {
