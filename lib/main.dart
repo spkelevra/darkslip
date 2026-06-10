@@ -1300,6 +1300,7 @@ class NoteScreen extends StatefulWidget {
 class _NoteScreenState extends State<NoteScreen> {
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
+  final FocusNode _editorFocusNode = FocusNode();
   String? _highlightedPostId;
   Timer? _highlightTimer;
   Post? _editingPost; 
@@ -1551,6 +1552,7 @@ class _NoteScreenState extends State<NoteScreen> {
   void dispose() {
     _controller.dispose();
     _scrollController.dispose();
+    _editorFocusNode.dispose();
     _highlightTimer?.cancel();
     super.dispose();
   }
@@ -1607,19 +1609,36 @@ class _NoteScreenState extends State<NoteScreen> {
                   tooltip: 'Cancel Edit',
                 ),
             Expanded(
-              child: TextField(
-                controller: _controller,
-                maxLines: null,
-                minLines: 1,
-                keyboardType: TextInputType.multiline,
-                textInputAction: TextInputAction.newline,
-                decoration: InputDecoration(
-                  hintText: _editingPost != null ? 'Editing post...' : 'Type a note...',
-                  suffix: Platform.isWindows || Platform.isMacOS || Platform.isLinux
-                      ? const Text('Enter to send · Shift+Enter for newline', style: TextStyle(color: Colors.grey, fontSize: 10))
-                      : null,
+              child: RawKeyboardListener(
+                focusNode: _editorFocusNode,
+                autofocus: false,
+                onKey: (event) {
+                  // On desktop: Enter sends, Shift+Enter inserts newline
+                  if ((Platform.isWindows || Platform.isMacOS || Platform.isLinux) &&
+                      event is RawKeyDownEvent &&
+                      event.logicalKey == LogicalKeyboardKey.enter) {
+                    if (event.isShiftPressed) {
+                      // Shift+Enter — let it through so TextField inserts a newline
+                      return;
+                    }
+                    // Plain Enter — intercept and send
+                    _saveOrAddPost();
+                  }
+                },
+                child: TextField(
+                  focusNode: _editorFocusNode,
+                  controller: _controller,
+                  maxLines: null,
+                  minLines: 1,
+                  keyboardType: TextInputType.multiline,
+                  textInputAction: TextInputAction.newline,
+                  decoration: InputDecoration(
+                    hintText: _editingPost != null ? 'Editing post...' : 'Type a note...',
+                    suffix: Platform.isWindows || Platform.isMacOS || Platform.isLinux
+                        ? const Text('Enter to send · Shift+Enter for newline', style: TextStyle(color: Colors.grey, fontSize: 10))
+                        : null,
+                  ),
                 ),
-                onSubmitted: (_) => _saveOrAddPost(),
               ),
             ),
                               if (_editingPost != null)
