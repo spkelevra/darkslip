@@ -1287,6 +1287,9 @@ class HomeScreen extends StatelessWidget {
 
 
 
+class _SaveNoteIntent extends Intent {}
+
+
 class NoteScreen extends StatefulWidget {
   final NoteContext context;
   
@@ -1608,14 +1611,29 @@ class _NoteScreenState extends State<NoteScreen> {
                   tooltip: 'Cancel Edit',
                 ),
             Expanded(
-              child: TextField(
-                controller: _controller,
-                maxLines: null,
-                minLines: 1,
-                keyboardType: TextInputType.multiline,
-                textInputAction: TextInputAction.newline,
-                decoration: InputDecoration(
-                  hintText: _editingPost != null ? 'Editing post...' : 'Type a note...',
+              child: Shortcuts(
+                shortcuts: {
+                  LogicalKeySet(LogicalKeyboardKey.control, LogicalKeyboardKey.enter): _SaveNoteIntent(),
+                },
+                child: Actions(
+                  actions: {
+                    _SaveNoteIntent: CallbackAction<_SaveNoteIntent>(
+                      onInvoke: (_) => _saveOrAddPost(),
+                    ),
+                  },
+                  child: TextField(
+                    controller: _controller,
+                    maxLines: null,
+                    minLines: 1,
+                    keyboardType: TextInputType.multiline,
+                    textInputAction: TextInputAction.newline,
+                    decoration: InputDecoration(
+                      hintText: _editingPost != null ? 'Editing post...' : 'Type a note...',
+                      suffix: Platform.isWindows || Platform.isMacOS || Platform.isLinux
+                          ? const Text('Ctrl+Enter', style: TextStyle(color: Colors.grey, fontSize: 10))
+                          : null,
+                    ),
+                  ),
                 ),
               ),
             ),
