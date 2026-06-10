@@ -1454,11 +1454,15 @@ class _NoteScreenState extends State<NoteScreen> {
     // Reload note content from disk to ensure we have the latest data
     await context.read<AppData>().repository.loadNote(widget.context.note, widget.context.subFolder, widget.context.folder);
     if (mounted) {
-      setState(() {}); 
-      
+      setState(() {});
+
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (_scrollController.hasClients) {
           _scrollController.jumpTo(0);
+        }
+        // Desktop only: auto-focus the editor so you can start typing immediately
+        if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
+          _editorFocusNode.requestFocus();
         }
       });
     }
