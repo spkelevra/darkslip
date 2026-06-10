@@ -911,16 +911,16 @@ void showRecentNotesDialog(BuildContext context) {
 
             if (isDesktop) {
               // On desktop AlertDialog gives infinite height to content.
-              // Use ConstrainedBox so the dialog scales naturally with window size.
+              // Let the shrinkWrap GridView size itself naturally (~250px),
+              // only scroll if the window is genuinely too small.
               final availableH = MediaQuery.of(ctx).size.height;
-              // The grid + footer naturally wants ~250px. 
-              // Max out at ~70% of viewport minus overhead for title bar and margins.
-              final maxH = (availableH * 0.7 - 100).clamp(250.0, 450.0);
+              // Subtract overhead: window title bar, dialog title/padding, safe margins
+              final maxContentH = availableH * 0.75;
               
               return SizedBox(
                 width: 520,
                 child: ConstrainedBox(
-                  constraints: BoxConstraints(maxHeight: maxH),
+                  constraints: BoxConstraints(maxHeight: maxContentH),
                   child: SingleChildScrollView(
                     child: innerContent,
                   ),
