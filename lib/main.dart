@@ -435,25 +435,26 @@ class AppData extends ChangeNotifier {
       // SAF: launch folder picker via method channel
       selectedPath = await storageBackend.pickDirectory();
     } else if (isDesktop) {
-      // Desktop: use path_provider to suggest Documents/darkslip as default,
-      // then let user type a custom path in Settings.
+      // Desktop: default to the app's documents directory + "darkslip"
       final docsDir = await getApplicationDocumentsDirectory();
-      // Suggest ~/Documents/darkslip equivalent
-      selectedPath = null; // Will fall through — user enters path manually on desktop
+      selectedPath = '${docsDir.path}\\darkslip';
     }
 
     if (selectedPath != null && selectedPath.isNotEmpty) {
+      debugPrint('[AppData] Initializing storage at: $selectedPath');
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('save_path', selectedPath);
       savePath = selectedPath;
 
       repository = NoteRepository(basePath: savePath, backend: storageBackend);
       _storageReady = await repository.checkStorageAccess();
+      debugPrint('[AppData] Storage ready: $_storageReady');
 
       if (_storageReady) {
         try {
           await repository.syncFromDisk(folders, rootNotes);
           _lastError = null;
+          debugPrint('[AppData] Sync OK — ${folders.length} folders, ${rootNotes.length} notes');
         } catch (e) {
           debugPrint("Folder init sync error: $e");
           _lastError = e.toString();
@@ -468,8 +469,10 @@ class AppData extends ChangeNotifier {
 
 
   Future<void> retryStorageInit() async {
+    debugPrint('[AppData] Retry storage init at: $savePath');
     repository = NoteRepository(basePath: savePath, backend: storageBackend);
     _storageReady = await repository.checkStorageAccess();
+    debugPrint('[AppData] Storage ready after retry: $_storageReady');
     if (_storageReady) {
       try {
         await repository.syncFromDisk(folders, rootNotes);
@@ -1811,11 +1814,17 @@ class SettingsScreen extends StatelessWidget {
 
 
 
-class OnboardingScreen extends StatelessWidget {
-  const OnboardingScreen({super.key});
+class _OnboardingScreenState extends State<OnboardingScreen> {
+  final TextEditingController _pathController = TextEditingController();
 
 
   @override
+  void dispose() {
+    _pathController.dispose();
+    super.dispose();
+  }
+
+
   Widget build(BuildContext context) {
     return Scaffold(
       body: Consumer<AppData>(
@@ -1831,6 +1840,18 @@ class OnboardingScreen extends StatelessWidget {
 
 
           final isAndroid = data.isAndroid;
+
+          void _applyManualPath() {
+            final val = _pathController.text.trim();
+            if (val.isNotEmpty) {
+              data.updateSavePath(val);
+              data.retryStorageInit().then((_) {
+                if (data.storageReady) {
+                  data.completeOnboarding();
+                }
+              });
+            }
+          }
 
           return SafeArea(
             child: Padding(
@@ -1860,7 +1881,7 @@ class OnboardingScreen extends StatelessWidget {
                   Text(
                     isAndroid
                         ? 'darkslip saves your notes as markdown files on your device. To get started, choose a folder for your notes.'
-                        : 'darkslip saves your notes as markdown files. To get started, choose a folder where your notes will be stored.',
+                        : 'darkslip saves your notes as markdown files. To get started, choose where your notes will be stored.',
                     textAlign: TextAlign.center,
                     style: TextStyle(fontSize: 16, color: Colors.grey[400]),
                   ),
@@ -1897,23 +1918,14 @@ class OnboardingScreen extends StatelessWidget {
                       children: [
                         Expanded(
                           child: TextField(
+                            controller: _pathController,
                             decoration: const InputDecoration(hintText: 'e.g. C:\\Users\\You\\Documents\\darkslip'),
-                            onSubmitted: (val) async {
-                              if (val.trim().isNotEmpty) {
-                                data.updateSavePath(val.trim());
-                                await data.retryStorageInit();
-                                if (data.storageReady) {
-                                  await data.completeOnboarding();
-                                }
-                              }
-                            },
+                            onSubmitted: (_) => _applyManualPath(),
                           ),
                         ),
                         const SizedBox(width: 8),
                         ElevatedButton(
-                          onPressed: () {
-                            // Triggered by Enter in the TextField above
-                          },
+                          onPressed: _applyManualPath,
                           child: const Text('Go'),
                         ),
                       ],
@@ -1960,6 +1972,15 @@ class OnboardingScreen extends StatelessWidget {
       ),
     );
   }
+}
+
+
+class OnboardingScreen extends StatefulWidget {
+  const OnboardingScreen({super.key});
+
+
+  @override
+  State<OnboardingScreen> createState() => _OnboardingScreenState();
 }
 
 
