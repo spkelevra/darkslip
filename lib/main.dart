@@ -834,7 +834,7 @@ void showRecentNotesDialog(BuildContext context) {
         title: const Text('Recent Notes', style: TextStyle(color: Colors.white)),
         content: SizedBox(
           width: Platform.isWindows || Platform.isMacOS || Platform.isLinux ? 520 : double.maxFinite,
-          height: 370,
+          height: Platform.isWindows || Platform.isMacOS || Platform.isLinux ? 430 : 370,
           child: Consumer<AppData>(
             builder: (ctx, data, _) => GridView.count(
               crossAxisCount: 3,
