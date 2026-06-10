@@ -3,13 +3,13 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:permission_handler/permission_handler.dart';
 
-
-
+import 'android_storage_backend.dart';
+import 'storage_backend.dart';
 // ================= MODELS =================
 
 
@@ -112,109 +112,84 @@ class RecentNote {
 // ================= HELPERS & REPOSITORY =================
 
 
-/// Centralizes file path logic to ensure consistency across the app.
+/// Centralizes path logic using forward-slash relative paths (works across platforms).
 class PathHelper {
-  static String getFilePath(String savePath, Note note, Folder? folder, SubFolder? subFolder) {
+  static String getFilePath(Note note, Folder? folder, SubFolder? subFolder) {
     if (folder == null && subFolder == null) {
-      return '$savePath/${note.name}.md';
+      return '${note.name}.md';
     }
-    
+
     final baseDir = folder!.name;
     final subDir = subFolder?.name ?? '';
-    final dirPath = subDir.isEmpty 
-        ? '$savePath/$baseDir' 
-        : '$savePath/$baseDir/$subDir';
-        
+    final dirPath = subDir.isEmpty ? baseDir : '$baseDir/$subDir';
+
     return '$dirPath/${note.name}.md';
   }
 
 
-  static Future<Directory> ensureDirectoryExists(String savePath, Folder? folder, SubFolder? subFolder) async {
-    Directory dir;
+  static String getDirectoryPath(Folder? folder, SubFolder? subFolder) {
     if (folder == null && subFolder == null) {
-      dir = Directory(savePath);
-    } else {
-      final baseDir = folder!.name;
-      final subDir = subFolder?.name ?? '';
-      final path = subDir.isEmpty 
-          ? '$savePath/$baseDir' 
-          : '$savePath/$baseDir/$subDir';
-      dir = Directory(path);
+      return '';
     }
 
-
-    if (!await dir.exists()) {
-      await dir.create(recursive: true);
-    }
-    return dir;
+    final baseDir = folder!.name;
+    final subDir = subFolder?.name ?? '';
+    return subDir.isEmpty ? baseDir : '$baseDir/$subDir';
   }
 }
 
 
-/// Handles all File I/O operations. Does not manage UI state or listeners.
+/// Handles all File I/O operations via a [StorageBackend].
 class NoteRepository {
-  final String savePath;
+  final String basePath;
+  final StorageBackend backend;
 
 
-  NoteRepository({required this.savePath});
+  NoteRepository({required this.basePath, required this.backend});
 
 
   Future<bool> checkStorageAccess() async {
-    try {
-      Directory(savePath).createSync(recursive: true);
-      final testFile = File('$savePath/.write_test');
-      await testFile.writeAsString('ok');
-      await testFile.delete();
-      return true;
-    } catch (e) {
-      debugPrint('Storage check failed: $e');
-      return false;
-    }
+    return await backend.checkAccess(basePath);
   }
 
 
   Future<void> syncFromDisk(List<Folder> folders, List<Note> rootNotes) async {
     try {
-      final dir = Directory(savePath);
-      if (!await dir.exists()) return;
-
+      final entries = await backend.listDirectory(basePath, '');
 
       folders.clear();
       rootNotes.clear();
 
+      for (var entry in entries) {
+        if (entry.isDirectory) {
+          final folder = Folder(id: 'f_${entry.name}', name: entry.name);
 
-      await for (var entity in dir.list()) {
-        if (entity is Directory) {
-          final folderName = entity.path.split(Platform.pathSeparator).last;
-          final folder = Folder(id: 'f_$folderName', name: folderName);
+          final subEntries = await backend.listDirectory(basePath, entry.name);
+          for (var sfEntity in subEntries) {
+            if (sfEntity.isDirectory) {
+              final subFolder = SubFolder(id: 'sf_${folder.name}_${sfEntity.name}', name: sfEntity.name);
 
-
-          await for (var sfEntity in entity.list()) {
-            if (sfEntity is Directory) {
-              final sfName = sfEntity.path.split(Platform.pathSeparator).last;
-              final subFolder = SubFolder(id: 'sf_${folder.name}_$sfName', name: sfName);
-
-
-              await for (var noteEntity in sfEntity.list()) {
-                if (noteEntity is File && noteEntity.path.endsWith('.md')) {
-                  final noteName = noteEntity.path.split(Platform.pathSeparator).last.replaceAll('.md', '');
-                  final note = Note(id: 'n_${noteName.hashCode}_${sfName.hashCode}', name: noteName);
+              final noteEntries = await backend.listDirectory(basePath, '${entry.name}/${sfEntity.name}');
+              for (var noteEntity in noteEntries) {
+                if (!noteEntity.isDirectory && noteEntity.name.endsWith('.md')) {
+                  final noteName = noteEntity.name.replaceAll('.md', '');
+                  final note = Note(id: 'n_${noteName.hashCode}_${sfEntity.name.hashCode}', name: noteName);
                   await loadNote(note, subFolder, folder);
                   subFolder.notes.add(note);
                 }
               }
               folder.subFolders.add(subFolder);
-            } else if (sfEntity is File && sfEntity.path.endsWith('.md')) {
-              final noteName = sfEntity.path.split(Platform.pathSeparator).last.replaceAll('.md', '');
+            } else if (sfEntity.name.endsWith('.md')) {
+              final noteName = sfEntity.name.replaceAll('.md', '');
               final note = Note(id: 'n_${noteName.hashCode}_${folder.name.hashCode}', name: noteName);
               await loadNote(note, null, folder);
               folder.notes.add(note);
             }
           }
           folders.add(folder);
-        } 
-        else if (entity is File && entity.path.endsWith('.md')) {
-          final noteName = entity.path.split(Platform.pathSeparator).last.replaceAll('.md', '');
+        }
+        else if (!entry.isDirectory && entry.name.endsWith('.md')) {
+          final noteName = entry.name.replaceAll('.md', '');
           // Avoid loading hidden files or system files if any
           if (!noteName.startsWith('.')) {
             final note = Note(id: 'n_root_${noteName.hashCode}', name: noteName);
@@ -225,23 +200,24 @@ class NoteRepository {
       }
     } catch (e) {
       debugPrint('Sync failed: $e');
-      rethrow; // Let the caller handle error display
+      rethrow;
     }
   }
 
 
   Future<void> saveNote(Note note, SubFolder? subFolder, Folder? folder) async {
     try {
-      final path = PathHelper.getFilePath(savePath, note, folder, subFolder);
+      final relPath = PathHelper.getFilePath(note, folder, subFolder);
+
       String mdContent = '';
-      
+
       for (var post in note.posts) {
         if (post.isPinned) mdContent += '<!-- PINNED -->\n';
         mdContent += '${post.content}\n---\n\n';
       }
-      
-      await File(path).writeAsString(mdContent);
-    } catch (e) { 
+
+      await backend.writeFile(basePath, relPath, mdContent);
+    } catch (e) {
       debugPrint('Save failed: $e');
       rethrow;
     }
@@ -250,12 +226,8 @@ class NoteRepository {
 
   Future<void> loadNote(Note note, SubFolder? subFolder, Folder? folder) async {
     try {
-      final path = PathHelper.getFilePath(savePath, note, folder, subFolder);
-      final file = File(path);
-      if (!await file.exists()) return;
-
-
-      String content = await file.readAsString();
+      final relPath = PathHelper.getFilePath(note, folder, subFolder);
+      String content = await backend.readFile(basePath, relPath);
       final sections = content.split(RegExp(r'^\s*---\s*$', multiLine: true));
 
 
@@ -266,8 +238,8 @@ class NoteRepository {
 
 
         bool pinned = section.startsWith('<!-- PINNED -->');
-        String cleanContent = pinned 
-            ? section.replaceFirst(RegExp(r'^<!--\s*PINNED\s*-->\s*\n?', multiLine: true), '').trim() 
+        String cleanContent = pinned
+            ? section.replaceFirst(RegExp(r'^<!--\s*PINNED\s*-->\s*\n?', multiLine: true), '').trim()
             : section;
 
 
@@ -278,7 +250,7 @@ class NoteRepository {
           isPinned: pinned,
         ));
       }
-    } catch (e) { 
+    } catch (e) {
       debugPrint('Load error: $e');
       rethrow;
     }
@@ -287,8 +259,8 @@ class NoteRepository {
 
   Future<void> deleteNoteFile(Note note, SubFolder? subFolder, Folder? folder) async {
     try {
-      final path = PathHelper.getFilePath(savePath, note, folder, subFolder);
-      if (await File(path).exists()) await File(path).delete();
+      final relPath = PathHelper.getFilePath(note, folder, subFolder);
+      await backend.deleteEntry(basePath, relPath);
     } catch (e) {
       debugPrint('Delete file failed: $e');
       rethrow;
@@ -298,17 +270,14 @@ class NoteRepository {
 
   Future<void> renameNoteFile(Note note, String newName, SubFolder? subFolder, Folder? folder) async {
     try {
-      final oldPath = PathHelper.getFilePath(savePath, note, folder, subFolder);
-      
-      // Create new Note object temporarily to get the new path
+      final oldRelPath = PathHelper.getFilePath(note, folder, subFolder);
+
+      // Build new relative path
       final tempNote = Note(id: note.id, name: newName);
-      final newPath = PathHelper.getFilePath(savePath, tempNote, folder, subFolder);
-      
-      final oldFile = File(oldPath);
-      if (await oldFile.exists()) {
-        await oldFile.rename(newPath);
-      }
-    } catch (e) { 
+      final newFileName = '${tempNote.name}.md';
+
+      await backend.renameEntry(basePath, oldRelPath, newFileName);
+    } catch (e) {
       debugPrint('Rename file failed: $e');
       rethrow;
     }
@@ -317,8 +286,7 @@ class NoteRepository {
 
   Future<void> deleteFolderDirectory(String folderName) async {
     try {
-      final dir = Directory('$savePath/$folderName');
-      if (await dir.exists()) await dir.delete(recursive: true);
+      await backend.deleteEntry(basePath, folderName);
     } catch (e) {
       debugPrint('Delete folder failed: $e');
       rethrow;
@@ -328,9 +296,8 @@ class NoteRepository {
 
   Future<void> renameFolderDirectory(String oldName, String newName) async {
     try {
-      final oldDir = Directory('$savePath/$oldName');
-      if (await oldDir.exists()) await oldDir.rename('$savePath/$newName');
-    } catch (e) { 
+      await backend.renameEntry(basePath, oldName, newName);
+    } catch (e) {
       debugPrint('Rename folder failed: $e');
       rethrow;
     }
@@ -339,9 +306,8 @@ class NoteRepository {
 
   Future<void> deleteSubFolderDirectory(String folderName, String subFolderName) async {
     try {
-      final dir = Directory('$savePath/$folderName/$subFolderName');
-      if (await dir.exists()) await dir.delete(recursive: true);
-    } catch (e) { 
+      await backend.deleteEntry(basePath, '$folderName/$subFolderName');
+    } catch (e) {
       debugPrint('Delete subfolder failed: $e');
       rethrow;
     }
@@ -350,11 +316,18 @@ class NoteRepository {
 
   Future<void> renameSubFolderDirectory(String folderName, String oldSfName, String newSfName) async {
     try {
-      final oldDir = Directory('$savePath/$folderName/$oldSfName');
-      if (await oldDir.exists()) await oldDir.rename('$savePath/$folderName/$newSfName');
-    } catch (e) { 
+      await backend.renameEntry(basePath, '$folderName/$oldSfName', newSfName);
+    } catch (e) {
       debugPrint('Rename subfolder failed: $e');
       rethrow;
+    }
+  }
+
+  /// Ensure a directory exists for the given folder/subFolder context.
+  Future<void> ensureDirectory(Folder? folder, SubFolder? subFolder) async {
+    final dirPath = PathHelper.getDirectoryPath(folder, subFolder);
+    if (dirPath.isNotEmpty) {
+      await backend.createDirectory(basePath, dirPath);
     }
   }
 }
@@ -366,12 +339,12 @@ class NoteRepository {
 
 class AppData extends ChangeNotifier {
   List<Folder> folders = [];
-  List<Note> rootNotes = []; 
-  
+  List<Note> rootNotes = [];
+
   String savePath = '';
   String appName = 'darkslip';
   Set<String> expandedTiles = {};
-  
+
   bool _initialized = false;
   bool _storageReady = false;
   bool _onboardingCompleted = false;
@@ -379,48 +352,70 @@ class AppData extends ChangeNotifier {
   // Added to fix the undefined getter error
   String? _lastError;
 
-
   // Recent Notes Tracking
   List<RecentNote> recentNotes = [];
 
 
   late NoteRepository repository;
+  late StorageBackend storageBackend;
 
 
   bool get storageReady => _storageReady;
   bool get onboardingCompleted => _onboardingCompleted;
 
 
+  /// Returns true if running on Android.
+  bool get isAndroid => Platform.isAndroid;
+
+  /// Returns true if running on a desktop platform (Windows, macOS, Linux).
+  bool get isDesktop => Platform.isWindows || Platform.isMacOS || Platform.isLinux;
+
 
   Future<void> init() async {
     if (_initialized) return;
-    
+
+    // Create the correct backend for this platform
+    storageBackend = _createStorageBackend();
+
     final prefs = await SharedPreferences.getInstance();
     appName = prefs.getString('app_name') ?? 'darkslip';
-    savePath = prefs.getString('save_path') ?? '/storage/emulated/0/Documents/darkslip';
-    
+    savePath = prefs.getString('save_path') ?? '';
+
     expandedTiles.addAll(prefs.getStringList('expanded_tiles') ?? []);
     _onboardingCompleted = prefs.getBool('onboarding_completed') ?? false;
 
 
-    repository = NoteRepository(savePath: savePath);
-    _storageReady = await repository.checkStorageAccess();
+    repository = NoteRepository(basePath: savePath, backend: storageBackend);
 
-
-    if (_storageReady) {
-      try {
-        await repository.syncFromDisk(folders, rootNotes);
-      } catch (e) {
-        debugPrint("Init sync error: $e");
-        _lastError = e.toString(); // Capture error for UI display
+    // If we have a saved path, try to use it
+    if (savePath.isNotEmpty) {
+      _storageReady = await repository.checkStorageAccess();
+      if (_storageReady) {
+        try {
+          await repository.syncFromDisk(folders, rootNotes);
+        } catch (e) {
+          debugPrint("Init sync error: $e");
+          _lastError = e.toString();
+        }
+      } else {
+        _lastError = "Storage access denied or unavailable.";
       }
-    } else {
-       _lastError = "Storage access denied or unavailable.";
     }
-    
+    // If no saved path, wait for onboarding to pick a folder
+
     await _loadRecentNotes();
     _initialized = true;
     notifyListeners();
+  }
+
+
+  /// Create the appropriate StorageBackend for the current platform.
+  StorageBackend _createStorageBackend() {
+    if (isAndroid) {
+      return AndroidStorageBackend();
+    } else {
+      return DesktopStorageBackend();
+    }
   }
 
 
@@ -432,16 +427,56 @@ class AppData extends ChangeNotifier {
   }
 
 
+  /// Pick a folder using the platform-native picker, then initialize storage.
+  Future<void> pickAndInitializeFolder() async {
+    String? selectedPath;
+
+    if (isAndroid) {
+      // SAF: launch folder picker via method channel
+      selectedPath = await storageBackend.pickDirectory();
+    } else if (isDesktop) {
+      // Desktop: use path_provider to suggest Documents/darkslip as default,
+      // then let user type a custom path in Settings.
+      final docsDir = await getApplicationDocumentsDirectory();
+      // Suggest ~/Documents/darkslip equivalent
+      selectedPath = null; // Will fall through — user enters path manually on desktop
+    }
+
+    if (selectedPath != null && selectedPath.isNotEmpty) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('save_path', selectedPath);
+      savePath = selectedPath;
+
+      repository = NoteRepository(basePath: savePath, backend: storageBackend);
+      _storageReady = await repository.checkStorageAccess();
+
+      if (_storageReady) {
+        try {
+          await repository.syncFromDisk(folders, rootNotes);
+          _lastError = null;
+        } catch (e) {
+          debugPrint("Folder init sync error: $e");
+          _lastError = e.toString();
+        }
+      } else {
+        _lastError = "Could not access selected folder.";
+      }
+    }
+
+    notifyListeners();
+  }
+
+
   Future<void> retryStorageInit() async {
-    repository = NoteRepository(savePath: savePath); // Refresh repo with current path
+    repository = NoteRepository(basePath: savePath, backend: storageBackend);
     _storageReady = await repository.checkStorageAccess();
     if (_storageReady) {
       try {
         await repository.syncFromDisk(folders, rootNotes);
-        _lastError = null; // Clear error on success
+        _lastError = null;
       } catch (e) {
         debugPrint("Retry sync error: $e");
-        _lastError = e.toString(); // Capture error for UI display
+        _lastError = e.toString();
       }
     } else {
        _lastError = "Storage access denied or unavailable.";
@@ -450,18 +485,14 @@ class AppData extends ChangeNotifier {
   }
 
 
+  /// On Android this is an alias for [pickAndInitializeFolder] (SAF).
+  /// On desktop platforms there are no permissions to request.
   Future<void> requestStoragePermission() async {
-    try {
-      final status = await Permission.manageExternalStorage.request();
-      if (status.isGranted) {
-        await retryStorageInit();
-      } else if (status.isDenied) {
-        debugPrint('Storage permission denied.');
-      } else if (status.isPermanentlyDenied) {
-        debugPrint('Permission permanently denied.');
-      }
-    } catch (e) {
-      debugPrint('Failed to request permission: $e');
+    if (isAndroid) {
+      await pickAndInitializeFolder();
+    } else {
+      // Desktop: just re-check access at current path
+      await retryStorageInit();
     }
   }
 
@@ -470,8 +501,8 @@ class AppData extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('save_path', newPath);
     savePath = newPath;
-    
-    repository = NoteRepository(savePath: savePath); // Update repo instance
+
+    repository = NoteRepository(basePath: savePath, backend: storageBackend);
     try {
       await repository.syncFromDisk(folders, rootNotes);
     } catch (e) {
@@ -1068,10 +1099,10 @@ class HomeScreen extends StatelessWidget {
                     width: double.infinity,
                     child: ElevatedButton.icon(
                       onPressed: () async {
-                        await data.requestStoragePermission();
+                        await data.pickAndInitializeFolder();
                       },
-                      icon: const Icon(Icons.security),
-                      label: const Text('Grant Storage Access', style: TextStyle(fontSize: 16)),
+                      icon: const Icon(Icons.folder_open),
+                      label: const Text('Select a Folder', style: TextStyle(fontSize: 16)),
                       style: ElevatedButton.styleFrom(
                         padding: const EdgeInsets.symmetric(vertical: 14),
                         backgroundColor: Colors.white,
@@ -1696,7 +1727,7 @@ class SettingsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final data = context.watch<AppData>();
-    
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Settings'),
@@ -1704,7 +1735,7 @@ class SettingsScreen extends StatelessWidget {
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: () async {
-              await data.retryStorageInit(); // This calls syncFromDisk internally
+              await data.retryStorageInit();
               if (context.mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(content: Text('Folders refreshed'), duration: Duration(seconds: 1)),
@@ -1721,24 +1752,51 @@ class SettingsScreen extends StatelessWidget {
           const Text('Save Location', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
           TextField(
-            decoration: InputDecoration(hintText: 'Enter directory path'),
-            controller: TextEditingController(text: data.savePath),
-            onSubmitted: (val) => data.updateSavePath(val.trim()),
+            decoration: InputDecoration(hintText: 'Current save location'),
+            controller: TextEditingController(text: data.storageBackend.formatPath(data.savePath)),
+            readOnly: true,
           ),
+          const SizedBox(height: 12),
+          ElevatedButton.icon(
+            onPressed: () async {
+              await data.pickAndInitializeFolder();
+            },
+            icon: const Icon(Icons.folder_open),
+            label: const Text('Change Folder'),
+            style: ElevatedButton.styleFrom(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+          ),
+          const SizedBox(height: 8),
+          // Allow manual path entry as fallback (desktop only)
+          if (data.isDesktop) ...[
+            const SizedBox(height: 16),
+            const Text('Or enter path manually', style: TextStyle(color: Colors.grey)),
+            const SizedBox(height: 8),
+            TextField(
+              decoration: InputDecoration(hintText: 'Enter directory path'),
+              controller: TextEditingController(text: data.savePath),
+              onSubmitted: (val) => data.updateSavePath(val.trim()),
+            ),
+          ],
           const SizedBox(height: 24),
-          const Text(
-            '• Files are saved to /Documents/darkslip by default\n'
-            '• This location survives app reinstalls',
-            style: TextStyle(color: Colors.grey, height: 1.5),
+          Text(
+            data.isAndroid
+                ? '• Your notes are stored as plain .md files in the folder you selected\n'
+                    '• This location survives app reinstalls\n'
+                    '• You can change it anytime from here'
+                : '• Your notes are stored as plain .md files in the folder you selected\n'
+                    '• You can change the save location anytime',
+            style: const TextStyle(color: Colors.grey, height: 1.5),
           ),
           const SizedBox(height: 24),
           if (!data.storageReady)
             ElevatedButton.icon(
               onPressed: () async {
-                await data.requestStoragePermission();
+                await data.pickAndInitializeFolder();
               },
-              icon: const Icon(Icons.security),
-              label: const Text('Grant Storage Access'),
+              icon: const Icon(Icons.folder_open),
+              label: const Text('Select a Folder'),
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.red[700],
                 foregroundColor: Colors.white,
@@ -1762,7 +1820,7 @@ class OnboardingScreen extends StatelessWidget {
     return Scaffold(
       body: Consumer<AppData>(
         builder: (ctx, data, _) {
-          if (data.onboardingCompleted) {
+          if (data.onboardingCompleted && data.storageReady) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
               Navigator.of(ctx).pushReplacement(
                 MaterialPageRoute(builder: (_) => const HomeScreen()),
@@ -1771,6 +1829,8 @@ class OnboardingScreen extends StatelessWidget {
             return Container();
           }
 
+
+          final isAndroid = data.isAndroid;
 
           return SafeArea(
             child: Padding(
@@ -1798,7 +1858,9 @@ class OnboardingScreen extends StatelessWidget {
 
 
                   Text(
-                    'darkslip saves your notes as markdown files on your device. To get started, we need storage access.',
+                    isAndroid
+                        ? 'darkslip saves your notes as markdown files on your device. To get started, choose a folder for your notes.'
+                        : 'darkslip saves your notes as markdown files. To get started, choose a folder where your notes will be stored.',
                     textAlign: TextAlign.center,
                     style: TextStyle(fontSize: 16, color: Colors.grey[400]),
                   ),
@@ -1809,11 +1871,16 @@ class OnboardingScreen extends StatelessWidget {
                     width: double.infinity,
                     child: ElevatedButton.icon(
                       onPressed: () async {
-                        await data.requestStoragePermission();
-                        await data.completeOnboarding();
+                        await data.pickAndInitializeFolder();
+                        if (data.storageReady) {
+                          await data.completeOnboarding();
+                        }
                       },
-                      icon: const Icon(Icons.security),
-                      label: const Text('Grant Storage Access', style: TextStyle(fontSize: 16)),
+                      icon: const Icon(Icons.folder_open),
+                      label: Text(
+                        isAndroid ? 'Choose a Folder' : 'Use Default Location',
+                        style: const TextStyle(fontSize: 16),
+                      ),
                       style: ElevatedButton.styleFrom(
                         padding: const EdgeInsets.symmetric(vertical: 16),
                         backgroundColor: Colors.white,
@@ -1822,26 +1889,36 @@ class OnboardingScreen extends StatelessWidget {
                       ),
                     ),
                   ),
-                  const SizedBox(height: 16),
-
-
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton.icon(
-                      onPressed: () async {
-                        await data.retryStorageInit();
-                        await data.completeOnboarding();
-                      },
-                      icon: const Icon(Icons.refresh),
-                      label: const Text('Check Again', style: TextStyle(fontSize: 16)),
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                        side: BorderSide(color: Colors.grey[700]!),
-                        foregroundColor: Colors.white70,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                      ),
+                  if (data.isDesktop) ...[
+                    const SizedBox(height: 16),
+                    const Text('Or enter a path manually below', style: TextStyle(color: Colors.grey)),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            decoration: const InputDecoration(hintText: 'e.g. C:\\Users\\You\\Documents\\darkslip'),
+                            onSubmitted: (val) async {
+                              if (val.trim().isNotEmpty) {
+                                data.updateSavePath(val.trim());
+                                await data.retryStorageInit();
+                                if (data.storageReady) {
+                                  await data.completeOnboarding();
+                                }
+                              }
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        ElevatedButton(
+                          onPressed: () {
+                            // Triggered by Enter in the TextField above
+                          },
+                          child: const Text('Go'),
+                        ),
+                      ],
                     ),
-                  ),
+                  ],
                   const SizedBox(height: 48),
 
 
@@ -1866,9 +1943,11 @@ class OnboardingScreen extends StatelessWidget {
                           ],
                         ),
                         const SizedBox(height: 8),
-                        const Text(
-                          'Your notes are stored as plain .md files in /Documents/darkslip. This means your data is always accessible, even after reinstalling the app.',
-                          style: TextStyle(color: Colors.grey, height: 1.5),
+                        Text(
+                          isAndroid
+                              ? 'Your notes are stored as plain .md files in the folder you choose. This means your data is always accessible, even after reinstalling the app.'
+                              : 'Your notes are stored as plain .md files in the folder you choose, so they remain accessible outside the app.',
+                          style: const TextStyle(color: Colors.grey, height: 1.5),
                         ),
                       ],
                     ),
