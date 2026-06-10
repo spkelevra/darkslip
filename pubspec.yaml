@@ -2,7 +2,7 @@ name: darkslip
 description: A dark-mode note-taking app with folder hierarchy and chat-like markdown posts.
 publish_to: 'none' # Remove if you plan to publish to pub.dev
 
-version: 2026.06.10+3
+version: 2026.06.10+4
 
 environment:
   sdk: '>=3.2.0 <4.0.0'
@@ -33,6 +33,9 @@ flutter_launcher_icons:
   ios: false
   image_path_android: "assets/icons/app_icon.png"
   windows:
+    generate: true
+    image_path: "assets/icons/app_icon.png"
+  macos:
     generate: true
     image_path: "assets/icons/app_icon.png"
   min_sdk_android: 21
