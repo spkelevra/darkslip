@@ -910,17 +910,17 @@ void showRecentNotesDialog(BuildContext context) {
             );
 
             if (isDesktop) {
-              // On desktop, AlertDialog doesn't constrain content height.
-              // Use LayoutBuilder to get the parent's width constraint, then
-              // let the content naturally size itself within available space.
-              return LayoutBuilder(
-                builder: (ctx, constraints) => ConstrainedBox(
-                  constraints: BoxConstraints(
-                    maxWidth: 520,
-                    maxHeight: constraints.maxHeight.isFinite 
-                        ? constraints.maxHeight 
-                        : MediaQuery.of(ctx).size.height * 0.6,
-                  ),
+              // On desktop AlertDialog gives infinite height to content.
+              // Use ConstrainedBox so the dialog scales naturally with window size.
+              final availableH = MediaQuery.of(ctx).size.height;
+              // The grid + footer naturally wants ~250px. 
+              // Max out at ~70% of viewport minus overhead for title bar and margins.
+              final maxH = (availableH * 0.7 - 100).clamp(250.0, 450.0);
+              
+              return SizedBox(
+                width: 520,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(maxHeight: maxH),
                   child: SingleChildScrollView(
                     child: innerContent,
                   ),
