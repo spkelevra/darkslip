@@ -10,6 +10,9 @@ class AndroidStorageBackend implements StorageBackend {
   /// Completer that resolves when the user picks a folder.
   Completer<String?>? _pickerCompleter;
 
+  /// Cached tree URI from Kotlin side — avoids passing it in every call.
+  String? _cachedTreeUri;
+
   AndroidStorageBackend() {
     _channel.setMethodCallHandler(_handleCallback);
   }
@@ -18,9 +21,25 @@ class AndroidStorageBackend implements StorageBackend {
     switch (call.method) {
       case 'onFolderSelected':
         final uri = call.arguments as String?;
+        _cachedTreeUri = uri;
         _pickerCompleter?.complete(uri);
         _pickerCompleter = null;
         break;
+    }
+  }
+
+  /// Ask Kotlin for the persisted tree URI (survives process death).
+  Future<String?> getSavedTreeUri() async {
+    // Return cached value if we already have it from a picker session
+    if (_cachedTreeUri != null) return _cachedTreeUri;
+
+    try {
+      final result = await _channel.invokeMethod('getSavedTreeUri');
+      _cachedTreeUri = result as String?;
+      return _cachedTreeUri;
+    } catch (e) {
+      debugPrint('SAF getSavedTreeUri failed: $e');
+      return null;
     }
   }
 
@@ -28,13 +47,28 @@ class AndroidStorageBackend implements StorageBackend {
   Future<String?> pickDirectory() async {
     _pickerCompleter = Completer<String?>();
     await _channel.invokeMethod('pickDirectory');
-    return await _pickerCompleter!.future;
+    final result = await _pickerCompleter!.future;
+    _cachedTreeUri = result;
+    return result;
+  }
+
+  /// Resolve the basePath: if null/empty, use the Kotlin-persisted URI.
+  Future<String?> _resolveBasePath(String? basePath) async {
+    if (basePath != null && basePath.isNotEmpty) {
+      // If it looks like a content:// URI, use it directly
+      if (basePath.startsWith('content://')) return basePath;
+      // Otherwise it's likely an old raw path — fall through to cached URI
+      debugPrint('[AndroidStorageBackend] basePath is not a content URI, using persisted tree URI');
+    }
+    return await getSavedTreeUri();
   }
 
   @override
   Future<bool> checkAccess(String basePath) async {
     try {
-      final result = await _channel.invokeMethod('checkAccess', {'basePath': basePath});
+      final resolved = await _resolveBasePath(basePath);
+      if (resolved == null) return false;
+      final result = await _channel.invokeMethod('checkAccess', {'basePath': resolved});
       return result as bool? ?? false;
     } catch (e) {
       debugPrint('SAF checkAccess failed: $e');
@@ -45,8 +79,10 @@ class AndroidStorageBackend implements StorageBackend {
   @override
   Future<List<StorageEntry>> listDirectory(String basePath, String relativePath) async {
     try {
+      final resolved = await _resolveBasePath(basePath);
+      if (resolved == null) return [];
       final List<dynamic> result = await _channel.invokeMethod('listDirectory', {
-        'basePath': basePath,
+        'basePath': resolved,
         'relativePath': relativePath,
       });
       return result.map((e) => StorageEntry(
@@ -61,8 +97,10 @@ class AndroidStorageBackend implements StorageBackend {
 
   @override
   Future<String> readFile(String basePath, String relativePath) async {
+    final resolved = await _resolveBasePath(basePath);
+    if (resolved == null) throw Exception('No SAF tree URI available');
     final result = await _channel.invokeMethod('readFile', {
-      'basePath': basePath,
+      'basePath': resolved,
       'relativePath': relativePath,
     });
     return result as String;
@@ -70,8 +108,10 @@ class AndroidStorageBackend implements StorageBackend {
 
   @override
   Future<void> writeFile(String basePath, String relativePath, String content) async {
+    final resolved = await _resolveBasePath(basePath);
+    if (resolved == null) throw Exception('No SAF tree URI available');
     await _channel.invokeMethod('writeFile', {
-      'basePath': basePath,
+      'basePath': resolved,
       'relativePath': relativePath,
       'content': content,
     });
@@ -79,24 +119,30 @@ class AndroidStorageBackend implements StorageBackend {
 
   @override
   Future<void> createDirectory(String basePath, String relativePath) async {
+    final resolved = await _resolveBasePath(basePath);
+    if (resolved == null) throw Exception('No SAF tree URI available');
     await _channel.invokeMethod('createDirectory', {
-      'basePath': basePath,
+      'basePath': resolved,
       'relativePath': relativePath,
     });
   }
 
   @override
   Future<void> deleteEntry(String basePath, String relativePath) async {
+    final resolved = await _resolveBasePath(basePath);
+    if (resolved == null) throw Exception('No SAF tree URI available');
     await _channel.invokeMethod('deleteEntry', {
-      'basePath': basePath,
+      'basePath': resolved,
       'relativePath': relativePath,
     });
   }
 
   @override
   Future<void> renameEntry(String basePath, String oldRelativePath, String newName) async {
+    final resolved = await _resolveBasePath(basePath);
+    if (resolved == null) throw Exception('No SAF tree URI available');
     await _channel.invokeMethod('renameEntry', {
-      'basePath': basePath,
+      'basePath': resolved,
       'oldRelativePath': oldRelativePath,
       'newName': newName,
     });
@@ -105,6 +151,6 @@ class AndroidStorageBackend implements StorageBackend {
   @override
   String formatPath(String basePath) {
     // SAF URIs are opaque — show a friendly label instead
-    return 'SAF: $basePath';
+    return 'SAF folder selected';
   }
 }

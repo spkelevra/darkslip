@@ -385,6 +385,25 @@ class AppData extends ChangeNotifier {
     _onboardingCompleted = prefs.getBool('onboarding_completed') ?? false;
 
 
+    // On Android, resolve the real SAF tree URI from Kotlin's persisted storage.
+    // The old savePath may be a stale raw filesystem path — replace it with the
+    // actual content:// URI that Kotlin has stored via takePersistableUriPermission.
+    if (isAndroid) {
+      final androidBackend = storageBackend as AndroidStorageBackend;
+      final treeUri = await androidBackend.getSavedTreeUri();
+      if (treeUri != null && treeUri.isNotEmpty) {
+        savePath = treeUri;
+        // Update SharedPreferences so future restarts also have the correct URI
+        await prefs.setString('save_path', treeUri);
+        debugPrint('[AppData] Resolved SAF tree URI: $treeUri');
+      } else if (savePath.isNotEmpty && !savePath.startsWith('content://')) {
+        // Old raw path with no persisted SAF URI — storage won't work, clear it
+        debugPrint('[AppData] Old save_path is not a content URI and no tree_uri found — clearing');
+        await prefs.remove('save_path');
+        savePath = '';
+      }
+    }
+
     repository = NoteRepository(basePath: savePath, backend: storageBackend);
 
     // If we have a saved path, try to use it
@@ -1867,7 +1886,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     return Scaffold(
       body: Consumer<AppData>(
         builder: (ctx, data, _) {
-          if (data.onboardingCompleted && data.storageReady) {
+          if (data.onboardingCompleted) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
               Navigator.of(ctx).pushReplacement(
                 MaterialPageRoute(builder: (_) => const HomeScreen()),
