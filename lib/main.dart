@@ -833,7 +833,7 @@ void showRecentNotesDialog(BuildContext context) {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Text('Recent Notes', style: TextStyle(color: Colors.white)),
         content: SizedBox(
-          width: double.maxFinite,
+          width: Platform.isWindows || Platform.isMacOS || Platform.isLinux ? 520 : double.maxFinite,
           height: 370,
           child: Consumer<AppData>(
             builder: (ctx, data, _) => GridView.count(
