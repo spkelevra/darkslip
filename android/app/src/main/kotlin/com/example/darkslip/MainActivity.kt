@@ -114,15 +114,42 @@ class MainActivity : FlutterActivity() {
 
     // ================== URI HELPERS ==================
 
-    private fun buildChildUri(treeUri: Uri, relativePath: String?): Uri {
-        if (relativePath.isNullOrEmpty()) return treeUri
+    /**
+     * Walk down from tree root to target path, resolving each segment by querying children.
+     * Avoids colon-ambiguity when treeDocId contains colons. Filters by MIME type when needed.
+     */
+    private fun buildChildUri(treeUri: Uri, relativePath: String?, mustBeDirectory: Boolean = false): Uri {
+        if (relativePath.isNullOrEmpty()) return DocumentsContract.buildDocumentUriUsingTree(
+            treeUri, DocumentsContract.getTreeDocumentId(treeUri)
+        )
+
         val parts = relativePath.split("/")
-        var childId = DocumentsContract.getTreeDocumentId(treeUri)
-        for (part in parts) {
-            childId = "$childId:$part"
+        var currentDocId = DocumentsContract.getTreeDocumentId(treeUri)
+
+        for ((i, part) in parts.withIndex()) {
+            val isDirOnly = i < parts.size - 1 || mustBeDirectory
+            val childUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, currentDocId)
+            val found = contentResolver.query(childUri, null, null, null, null)?.use { cursor ->
+                val nameIdx = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                val docIdIdx = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                val typeIdx = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                var matchedDocId: String? = null
+                while (cursor.moveToNext()) {
+                    if (cursor.getString(nameIdx) == part) {
+                        if (isDirOnly && cursor.getString(typeIdx) != DocumentsContract.Document.MIME_TYPE_DIR) continue
+                        matchedDocId = cursor.getString(docIdIdx)
+                        break
+                    }
+                }
+                matchedDocId
+            }
+            if (found == null) throw IllegalArgumentException("Cannot find child under " + currentDocId)
+            currentDocId = found
         }
-        return DocumentsContract.buildDocumentUriUsingTree(treeUri, childId)
+
+        return DocumentsContract.buildDocumentUriUsingTree(treeUri, currentDocId)
     }
+
 
     // ================== STORAGE OPERATIONS ==================
 
@@ -142,10 +169,16 @@ class MainActivity : FlutterActivity() {
     private fun handleListDirectory(basePath: String?, relativePath: String?, result: MethodChannel.Result) {
         try {
             val treeUri = Uri.parse(basePath!!)
-            val parentUri = buildChildUri(treeUri, relativePath)
+            // When listing root, use treeDocId directly. For subdirs, resolve via buildChildUri.
+            val parentId = if (relativePath.isNullOrEmpty()) {
+                DocumentsContract.getTreeDocumentId(treeUri)
+            } else {
+                val parentUri = buildChildUri(treeUri, relativePath)
+                DocumentsContract.getDocumentId(parentUri)
+            }
 
             val childUri = DocumentsContract.buildChildDocumentsUriUsingTree(
-                treeUri, DocumentsContract.getDocumentId(parentUri)
+                treeUri, parentId
             )
             val cursor: Cursor? = contentResolver.query(childUri, null, null, null, null)
 
@@ -187,18 +220,27 @@ class MainActivity : FlutterActivity() {
         try {
             val treeUri = Uri.parse(basePath!!)
 
-            // Ensure parent directory exists
-            val parentPath = relativePath?.substringBeforeLast("/") ?: ""
+            // Extract parent path and file name. If no "/" exists, the note lives at root.
+            val hasSlash = relativePath?.contains("/") == true
+            val parentPath = if (hasSlash) relativePath!!.substringBeforeLast("/") else ""
+            val fileName = if (hasSlash) relativePath!!.substringAfterLast("/") else (relativePath ?: "")
+
+            // Ensure parent directory exists (skip for root-level notes)
             if (parentPath.isNotEmpty()) {
                 ensureDirectoryExists(treeUri, parentPath)
             }
 
-            val fileName = relativePath?.substringAfterLast("/", relativePath ?: "")!!
-            val parentUri = buildChildUri(treeUri, parentPath)
+            // For root notes, parent is the tree itself. For subfolder notes, resolve the folder.
+            val parentId = if (parentPath.isEmpty()) {
+                DocumentsContract.getTreeDocumentId(Uri.parse(basePath!!))
+            } else {
+                val parentUri = buildChildUri(Uri.parse(basePath!!), parentPath, mustBeDirectory = true)
+                DocumentsContract.getDocumentId(parentUri)
+            }
 
             // Check if file already exists
             val childUri = DocumentsContract.buildChildDocumentsUriUsingTree(
-                treeUri, DocumentsContract.getDocumentId(parentUri)
+                Uri.parse(basePath!!), parentId
             )
             var existingDocId: String? = null
 
@@ -214,10 +256,13 @@ class MainActivity : FlutterActivity() {
             }
 
             val documentUri: Uri = if (existingDocId != null) {
-                DocumentsContract.buildDocumentUriUsingTree(treeUri, existingDocId!!)
+                DocumentsContract.buildDocumentUriUsingTree(Uri.parse(basePath!!), existingDocId!!)
             } else {
+                val parentDocUri = DocumentsContract.buildChildDocumentsUriUsingTree(
+                    Uri.parse(basePath!!), parentId
+                )
                 DocumentsContract.createDocument(
-                    contentResolver, parentUri, "text/markdown", fileName
+                    contentResolver, parentDocUri, "text/markdown", fileName
                 )!!
             }
 
