@@ -1301,6 +1301,7 @@ class _NoteScreenState extends State<NoteScreen> {
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final FocusNode _editorFocusNode = FocusNode();
+  final FocusNode _keyboardFocusNode = FocusNode();
   String? _highlightedPostId;
   Timer? _highlightTimer;
   Post? _editingPost; 
@@ -1553,6 +1554,7 @@ class _NoteScreenState extends State<NoteScreen> {
     _controller.dispose();
     _scrollController.dispose();
     _editorFocusNode.dispose();
+    _keyboardFocusNode.dispose();
     _highlightTimer?.cancel();
     super.dispose();
   }
@@ -1610,7 +1612,7 @@ class _NoteScreenState extends State<NoteScreen> {
                 ),
             Expanded(
               child: RawKeyboardListener(
-                focusNode: _editorFocusNode,
+                focusNode: _keyboardFocusNode,
                 autofocus: false,
                 onKey: (event) {
                   // On desktop: Enter sends, Shift+Enter inserts newline
