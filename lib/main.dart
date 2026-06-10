@@ -839,11 +839,11 @@ void showRecentNotesDialog(BuildContext context) {
             builder: (ctx, data, _) => Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Expanded(
-                  child: GridView.count(
-                    crossAxisCount: 3,
-                    mainAxisSpacing: 10,
-                    crossAxisSpacing: 10,
+                GridView.count(
+                  shrinkWrap: true,
+                  crossAxisCount: 3,
+                  mainAxisSpacing: 10,
+                  crossAxisSpacing: 10,
                     children: List.generate(9, (index) {
                       if (index < data.recentNotes.length) {
                         final recent = data.recentNotes[index];
@@ -860,7 +860,6 @@ void showRecentNotesDialog(BuildContext context) {
                       }
                     }),
                   ),
-                ),
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 4.0),
                   child: Row(
