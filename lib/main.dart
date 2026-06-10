@@ -1431,6 +1431,7 @@ class _NoteScreenState extends State<NoteScreen> {
   final ScrollController _scrollController = ScrollController();
   final FocusNode _editorFocusNode = FocusNode();
   final FocusNode _keyboardFocusNode = FocusNode();
+  final FocusNode _navKeyboardNode = FocusNode();
   String? _highlightedPostId;
   Timer? _highlightTimer;
   Post? _editingPost; 
@@ -1684,6 +1685,7 @@ class _NoteScreenState extends State<NoteScreen> {
     _scrollController.dispose();
     _editorFocusNode.dispose();
     _keyboardFocusNode.dispose();
+    _navKeyboardNode.dispose();
     _highlightTimer?.cancel();
     super.dispose();
   }
@@ -1692,8 +1694,9 @@ class _NoteScreenState extends State<NoteScreen> {
   @override
   Widget build(BuildContext context) {
     final bottomPadding = MediaQuery.of(context).padding.bottom;
-    
-    return Scaffold(
+    final isDesktop = Platform.isWindows || Platform.isMacOS || Platform.isLinux;
+
+    final screenContent = Scaffold(
       appBar: AppBar(
         title: Text(widget.context.note.name),
         actions: [
@@ -1744,16 +1747,23 @@ class _NoteScreenState extends State<NoteScreen> {
                 focusNode: _keyboardFocusNode,
                 autofocus: false,
                 onKey: (event) {
-                  // On desktop: Enter sends, Shift+Enter inserts newline
-                  if ((Platform.isWindows || Platform.isMacOS || Platform.isLinux) &&
-                      event is RawKeyDownEvent &&
-                      event.logicalKey == LogicalKeyboardKey.enter) {
-                    if (event.isShiftPressed) {
-                      // Shift+Enter — let it through so TextField inserts a newline
+                  if ((Platform.isWindows || Platform.isMacOS || Platform.isLinux) && event is RawKeyDownEvent) {
+                    // Escape: cancel edit mode or unfocus editor
+                    if (event.logicalKey == LogicalKeyboardKey.escape) {
+                      if (_editingPost != null) {
+                        _cancelEdit();
+                      } else {
+                        FocusScope.of(context).unfocus();
+                      }
                       return;
                     }
-                    // Plain Enter — intercept and send
-                    _saveOrAddPost();
+                    // Enter sends, Shift+Enter inserts newline
+                    if (event.logicalKey == LogicalKeyboardKey.enter) {
+                      if (event.isShiftPressed) {
+                        return;
+                      }
+                      _saveOrAddPost();
+                    }
                   }
                 },
                 child: TextField(
@@ -1786,6 +1796,21 @@ class _NoteScreenState extends State<NoteScreen> {
         ],
       ),
     );
+
+    if (isDesktop) {
+      return RawKeyboardListener(
+        focusNode: _navKeyboardNode,
+        autofocus: true,
+        onKey: (event) {
+          if (event is RawKeyDownEvent && event.logicalKey == LogicalKeyboardKey.escape) {
+            // Escape from note screen: go back to home
+            if (Navigator.canPop(context)) Navigator.pop(context);
+          }
+        },
+        child: screenContent,
+      );
+    }
+    return screenContent;
   }
 
 
