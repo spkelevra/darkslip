@@ -7,7 +7,6 @@ import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:file_picker/file_picker.dart';
 
 import 'android_storage_backend.dart';
 import 'storage_backend.dart';
@@ -461,12 +460,9 @@ class AppData extends ChangeNotifier {
       // SAF: launch folder picker via method channel
       selectedPath = await storageBackend.pickDirectory();
     } else if (isDesktop) {
-      // Desktop: use native folder picker so sandboxed apps can access
-      // user-selected locations (e.g., SMB shares, network volumes).
-      final result = await FilePicker.platform.getDirectoryPath();
-      if (result != null && result.isNotEmpty) {
-        selectedPath = result;
-      }
+      // Desktop: default to app documents directory
+      final docsDir = await getApplicationDocumentsDirectory();
+      selectedPath = '${docsDir.path}\\darkslip';
     }
 
     if (selectedPath != null && selectedPath.isNotEmpty) {
