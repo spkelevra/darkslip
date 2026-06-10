@@ -851,70 +851,88 @@ void showRecentNotesDialog(BuildContext context) {
         backgroundColor: Colors.grey[900],
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Text('Recent Notes', style: TextStyle(color: Colors.white)),
-        content: SizedBox(
-          width: Platform.isWindows || Platform.isMacOS || Platform.isLinux ? 520 : double.maxFinite,
-          child: Consumer<AppData>(
-            builder: (ctx, data, _) {
-              final isDesktop = Platform.isWindows || Platform.isMacOS || Platform.isLinux;
-              final innerContent = Column(
-                mainAxisSize: MainAxisSize.min,
+        content: Consumer<AppData>(
+          builder: (ctx, data, _) {
+            final isDesktop = Platform.isWindows || Platform.isMacOS || Platform.isLinux;
+            
+            final gridContent = GridView.count(
+              shrinkWrap: true,
+              crossAxisCount: 3,
+              mainAxisSpacing: 10,
+              crossAxisSpacing: 10,
+              children: List.generate(9, (index) {
+                if (index < data.recentNotes.length) {
+                  final recent = data.recentNotes[index];
+                  return _buildRecentTile(recent, ctx, pasteToEnabled);
+                } else {
+                  return Container(
+                    decoration: BoxDecoration(
+                      color: Colors.grey[850],
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.grey[700]!),
+                    ),
+                    child: const Center(child: Text('Empty', style: TextStyle(color: Colors.grey, fontSize: 12))),
+                  );
+                }
+              }),
+            );
+
+            final footer = Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 4.0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                GridView.count(
-                  shrinkWrap: true,
-                  crossAxisCount: 3,
-                  mainAxisSpacing: 10,
-                  crossAxisSpacing: 10,
-                    children: List.generate(9, (index) {
-                      if (index < data.recentNotes.length) {
-                        final recent = data.recentNotes[index];
-                        return _buildRecentTile(recent, ctx, pasteToEnabled);
-                      } else {
-                        return Container(
-                          decoration: BoxDecoration(
-                            color: Colors.grey[850],
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: Colors.grey[700]!),
-                          ),
-                          child: const Center(child: Text('Empty', style: TextStyle(color: Colors.grey, fontSize: 12))),
-                        );
-                      }
-                    }),
-                  ),
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 4.0),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  Row(
                     children: [
-                      Row(
-                        children: [
-                          Checkbox(
-                            value: pasteToEnabled,
-                            activeColor: Colors.white70,
-                            checkColor: Colors.grey[900],
-                            onChanged: (val) {
-                              pasteToEnabled = val ?? false;
-                              setDialogState(() {});
-                            },
-                          ),
-                          const Text('Paste To', style: TextStyle(color: Colors.white70)),
-                        ],
+                      Checkbox(
+                        value: pasteToEnabled,
+                        activeColor: Colors.white70,
+                        checkColor: Colors.grey[900],
+                        onChanged: (val) {
+                          pasteToEnabled = val ?? false;
+                          setDialogState(() {});
+                        },
                       ),
-                      TextButton(
-                        onPressed: () => Navigator.pop(ctx),
-                        child: const Text('Close'),
-                      ),
+                      const Text('Paste To', style: TextStyle(color: Colors.white70)),
                     ],
                   ),
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text('Close'),
+                  ),
+                ],
+              ),
+            );
+
+            final innerContent = Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [gridContent, footer],
+            );
+
+            if (isDesktop) {
+              // On desktop, AlertDialog doesn't constrain content height.
+              // Use LayoutBuilder to get the parent's width constraint, then
+              // let the content naturally size itself within available space.
+              return LayoutBuilder(
+                builder: (ctx, constraints) => ConstrainedBox(
+                  constraints: BoxConstraints(
+                    maxWidth: 520,
+                    maxHeight: constraints.maxHeight.isFinite 
+                        ? constraints.maxHeight 
+                        : MediaQuery.of(ctx).size.height * 0.6,
+                  ),
+                  child: SingleChildScrollView(
+                    child: innerContent,
+                  ),
                 ),
-                  ],
-                );
-                if (isDesktop) {
-                  final maxH = MediaQuery.of(ctx).size.height * 0.58;
-                  return SizedBox(height: maxH, child: SingleChildScrollView(child: innerContent));
-                }
-                return innerContent;
-              },
-          ),
+              );
+            }
+
+            return SizedBox(
+              width: double.maxFinite,
+              child: innerContent,
+            );
+          },
         ),
       ),
     ),
