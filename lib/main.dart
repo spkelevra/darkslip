@@ -1046,8 +1046,8 @@ class HomeScreen extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(
         title: Consumer<AppData>(
-          builder: (ctx, data, _) => GestureDetector(
-            onLongPress: () {
+          builder: (ctx, data, _) {
+            final renameHandler = () {
               final ctrl = TextEditingController(text: data.appName);
               showDialog(
                 context: ctx,
@@ -1069,9 +1069,13 @@ class HomeScreen extends StatelessWidget {
                   ],
                 ),
               );
-            },
-            child: Text(data.appName),
-          ),
+            };
+            return GestureDetector(
+              onLongPress: renameHandler,
+              onSecondaryTap: (Platform.isWindows || Platform.isMacOS || Platform.isLinux) ? renameHandler : null,
+              child: Text(data.appName),
+            );
+          },
         ),
         actions: [
             IconButton(
@@ -1214,6 +1218,7 @@ class HomeScreen extends StatelessWidget {
 
 
   Widget _buildFolderTile(BuildContext ctx, AppData data, Folder folder) {
+    final isDesktop = Platform.isWindows || Platform.isMacOS || Platform.isLinux;
     return GestureDetector(
       onLongPress: () => _showItemMenu(ctx, 'Folder', 
         onRename: () => _showInputDialog(ctx, 'Rename Folder', TextEditingController(text: folder.name), (name) => data.renameFolder(folder, name)),
@@ -1236,6 +1241,27 @@ class HomeScreen extends StatelessWidget {
           ));
         }
       ),
+      onSecondaryTap: isDesktop ? () => _showItemMenu(ctx, 'Folder', 
+        onRename: () => _showInputDialog(ctx, 'Rename Folder', TextEditingController(text: folder.name), (name) => data.renameFolder(folder, name)),
+        onDelete: () {
+          showDialog(context: ctx, builder: (_) => AlertDialog(
+            backgroundColor: Colors.grey[900],
+            title: const Text('Delete Folder?', style: TextStyle(color: Colors.white)),
+            content: Text('This will permanently delete "${folder.name}" and all its contents.', style: const TextStyle(color: Colors.white70)),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+              TextButton(
+                onPressed: () { 
+                  data.deleteFolder(folder); 
+                  Navigator.pop(ctx); 
+                }, 
+                style: ButtonStyle(foregroundColor: WidgetStateProperty.all(Colors.red)), 
+                child: const Text('Delete')
+              ),
+            ],
+          ));
+        }
+      ) : null,
       child: ExpansionTile(
         initiallyExpanded: data.expandedTiles.contains(folder.id),
         onExpansionChanged: (expanded) => data.toggleExpanded(folder.id),
@@ -1267,6 +1293,7 @@ class HomeScreen extends StatelessWidget {
 
 
   Widget _buildSubFolderTile(BuildContext ctx, AppData data, Folder parentFolder, SubFolder subFolder) {
+    final isDesktop = Platform.isWindows || Platform.isMacOS || Platform.isLinux;
     return GestureDetector(
       onLongPress: () => _showItemMenu(ctx, 'SubFolder',
         onRename: () => _showInputDialog(ctx, 'Rename SubFolder', TextEditingController(text: subFolder.name), (name) => data.renameSubFolder(subFolder, parentFolder, name)),
@@ -1289,6 +1316,27 @@ class HomeScreen extends StatelessWidget {
           ));
         }
       ),
+      onSecondaryTap: isDesktop ? () => _showItemMenu(ctx, 'SubFolder',
+        onRename: () => _showInputDialog(ctx, 'Rename SubFolder', TextEditingController(text: subFolder.name), (name) => data.renameSubFolder(subFolder, parentFolder, name)),
+        onDelete: () {
+          showDialog(context: ctx, builder: (_) => AlertDialog(
+            backgroundColor: Colors.grey[900],
+            title: const Text('Delete SubFolder?', style: TextStyle(color: Colors.white)),
+            content: Text('This will permanently delete "${subFolder.name}" and its notes.', style: const TextStyle(color: Colors.white70)),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+              TextButton(
+                onPressed: () { 
+                  data.deleteSubFolder(subFolder, parentFolder); 
+                  Navigator.pop(ctx); 
+                }, 
+                style: ButtonStyle(foregroundColor: WidgetStateProperty.all(Colors.red)), 
+                child: const Text('Delete')
+              ),
+            ],
+          ));
+        }
+      ) : null,
       child: ExpansionTile(
         initiallyExpanded: data.expandedTiles.contains(subFolder.id),
         onExpansionChanged: (expanded) => data.toggleExpanded(subFolder.id),
@@ -1309,6 +1357,7 @@ class HomeScreen extends StatelessWidget {
 
 
   Widget _buildNoteTile(BuildContext ctx, AppData data, NoteContext context) {
+    final isDesktop = Platform.isWindows || Platform.isMacOS || Platform.isLinux;
     return GestureDetector(
       onLongPress: () => _showItemMenu(ctx, 'Note',
         onRename: () => _showInputDialog(ctx, 'Rename Note', TextEditingController(text: context.note.name), (name) => data.renameNote(context, name)),
@@ -1331,6 +1380,27 @@ class HomeScreen extends StatelessWidget {
           ));
         }
       ),
+      onSecondaryTap: isDesktop ? () => _showItemMenu(ctx, 'Note',
+        onRename: () => _showInputDialog(ctx, 'Rename Note', TextEditingController(text: context.note.name), (name) => data.renameNote(context, name)),
+        onDelete: () {
+          showDialog(context: ctx, builder: (_) => AlertDialog(
+            backgroundColor: Colors.grey[900],
+            title: const Text('Delete Note?', style: TextStyle(color: Colors.white)),
+            content: Text('This will permanently delete "${context.note.name}" and its file.', style: const TextStyle(color: Colors.white70)),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+              TextButton(
+                onPressed: () { 
+                  data.deleteNote(context); 
+                  Navigator.pop(ctx); 
+                }, 
+                style: ButtonStyle(foregroundColor: WidgetStateProperty.all(Colors.red)), 
+                child: const Text('Delete')
+              ),
+            ],
+          ));
+        }
+      ) : null,
       child: ListTile(
         leading: Icon(context.isRootNote ? Icons.note : Icons.note_outlined, color: Colors.white70),
         title: Text(context.note.name),
@@ -1750,6 +1820,7 @@ class _NoteScreenState extends State<NoteScreen> {
       child: GestureDetector(
         onTap: () => _copyToClipboard(post.content),
         onLongPress: () => _editPost(post),
+        onSecondaryTap: (Platform.isWindows || Platform.isMacOS || Platform.isLinux) ? () => _editPost(post) : null,
         child: Card(
           margin: const EdgeInsets.only(bottom: 10),
           color: isHighlighted ? Colors.grey[800] : Colors.grey[850],
