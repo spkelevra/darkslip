@@ -836,45 +836,61 @@ void showRecentNotesDialog(BuildContext context) {
           width: Platform.isWindows || Platform.isMacOS || Platform.isLinux ? 520 : double.maxFinite,
           height: Platform.isWindows || Platform.isMacOS || Platform.isLinux ? 470 : 370,
           child: Consumer<AppData>(
-            builder: (ctx, data, _) => GridView.count(
-              crossAxisCount: 3,
-              mainAxisSpacing: 10,
-              crossAxisSpacing: 10,
-              children: List.generate(9, (index) {
-                if (index < data.recentNotes.length) {
-                  final recent = data.recentNotes[index];
-                  return _buildRecentTile(recent, ctx, pasteToEnabled);
-                } else {
-                  return Container(
-                    decoration: BoxDecoration(
-                      color: Colors.grey[850],
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.grey[700]!),
-                    ),
-                    child: const Center(child: Text('Empty', style: TextStyle(color: Colors.grey, fontSize: 12))),
-                  );
-                }
-              }),
+            builder: (ctx, data, _) => Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Expanded(
+                  child: GridView.count(
+                    crossAxisCount: 3,
+                    mainAxisSpacing: 10,
+                    crossAxisSpacing: 10,
+                    children: List.generate(9, (index) {
+                      if (index < data.recentNotes.length) {
+                        final recent = data.recentNotes[index];
+                        return _buildRecentTile(recent, ctx, pasteToEnabled);
+                      } else {
+                        return Container(
+                          decoration: BoxDecoration(
+                            color: Colors.grey[850],
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.grey[700]!),
+                          ),
+                          child: const Center(child: Text('Empty', style: TextStyle(color: Colors.grey, fontSize: 12))),
+                        );
+                      }
+                    }),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 4.0),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Row(
+                        children: [
+                          Checkbox(
+                            value: pasteToEnabled,
+                            activeColor: Colors.white70,
+                            checkColor: Colors.grey[900],
+                            onChanged: (val) {
+                              pasteToEnabled = val ?? false;
+                              setDialogState(() {});
+                            },
+                          ),
+                          const Text('Paste To', style: TextStyle(color: Colors.white70)),
+                        ],
+                      ),
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx),
+                        child: const Text('Close'),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
           ),
         ),
-        actions: [
-          Row(
-            children: [
-              Checkbox(
-                value: pasteToEnabled,
-                activeColor: Colors.white70,
-                checkColor: Colors.grey[900],
-                onChanged: (val) {
-                  pasteToEnabled = val ?? false;
-                  setDialogState(() {});
-                },
-              ),
-              const Text('Paste To', style: TextStyle(color: Colors.white70)),
-            ],
-          ),
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
-        ],
       ),
     ),
   );
