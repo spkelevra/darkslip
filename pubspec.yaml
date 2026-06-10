@@ -2,7 +2,7 @@ name: darkslip
 description: A dark-mode note-taking app with folder hierarchy and chat-like markdown posts.
 publish_to: 'none' # Remove if you plan to publish to pub.dev
 
-version: 2026.06.10+5
+version: 2026.06.10+6
 
 environment:
   sdk: '>=3.2.0 <4.0.0'
