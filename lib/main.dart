@@ -1626,8 +1626,16 @@ class _NoteScreenState extends State<NoteScreen> {
     _controller.text = post.content;
     _controller.selection = TextSelection.collapsed(offset: _controller.text.length);
     _editingPost = post;
-    FocusScope.of(context).requestFocus(FocusNode());
     if (mounted) setState(() {});
+    // After frame builds, focus the editor so cursor + keyboard appear immediately
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _editorFocusNode.requestFocus();
+      _scrollController.animateTo(
+        0,
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOut,
+      );
+    });
   }
 
 
