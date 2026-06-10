@@ -28,6 +28,11 @@ class MainActivity : FlutterActivity() {
         channel = MethodChannel(messenger, "darkslip/storage")
         channel.setMethodCallHandler { call, result ->
             when (call.method) {
+                "getSavedTreeUri" -> {
+                    val prefs = getPreferences(MODE_PRIVATE)
+                    val savedUri = prefs.getString("tree_uri", null)
+                    result.success(treeUri?.toString() ?: savedUri)
+                }
                 "pickDirectory" -> launchFolderPicker(result)
                 "checkAccess" -> handleCheckAccess(call.argument("basePath"), result)
                 "listDirectory" -> handleListDirectory(
