@@ -851,12 +851,14 @@ void showRecentNotesDialog(BuildContext context) {
         backgroundColor: Colors.grey[900],
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Text('Recent Notes', style: TextStyle(color: Colors.white)),
-        content: SizedBox(
-          width: Platform.isWindows || Platform.isMacOS || Platform.isLinux ? 520 : double.maxFinite,
-          child: Consumer<AppData>(
-            builder: (ctx, data, _) => Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
+        content: LayoutBuilder(
+          builder: (ctx, constraints) => SizedBox(
+            width: Platform.isWindows || Platform.isMacOS || Platform.isLinux ? 520 : double.maxFinite,
+            height: constraints.maxHeight < 470 ? constraints.maxHeight : 470,
+            child: Consumer<AppData>(
+              builder: (ctx, data, _) => Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
                 GridView.count(
                   shrinkWrap: true,
                   crossAxisCount: 3,
@@ -904,7 +906,8 @@ void showRecentNotesDialog(BuildContext context) {
                     ],
                   ),
                 ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
