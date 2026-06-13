@@ -1471,11 +1471,33 @@ class _NoteScreenState extends State<NoteScreen> {
 
   void _copyToClipboard(String text) {
     Clipboard.setData(ClipboardData(text: text));
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Copied to clipboard!'), duration: Duration(seconds: 1)),
-      );
-    }
+    // Show a tiny overlay toast — sits above everything, zero layout impact.
+    final overlayState = Overlay.of(context);
+    final entry = OverlayEntry(
+      builder: (_) => TweenAnimationBuilder<double>(
+        tween: Tween(begin: 0.0, end: 1.0),
+        duration: const Duration(milliseconds: 200),
+        builder: (_, opacity, __) => Positioned(
+          top: MediaQuery.of(context).padding.top + kToolbarHeight + 4,
+          right: 12,
+          child: Opacity(
+            opacity: opacity,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: Colors.grey[700],
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Text('Copied', style: TextStyle(fontSize: 11, color: Colors.white70)),
+            ),
+          ),
+        ),
+      ),
+    );
+    overlayState.insert(entry);
+    Future.delayed(const Duration(seconds: 1), () {
+      entry.remove();
+    });
   }
 
 
@@ -1854,11 +1876,7 @@ class _NoteScreenState extends State<NoteScreen> {
          } catch(e) { debugPrint("Delete save failed"); }
 
 
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Post deleted'), duration: Duration(seconds: 1)),
-          );
-        }
+
       },
       child: GestureDetector(
         onTap: () => _copyToClipboard(post.content),
