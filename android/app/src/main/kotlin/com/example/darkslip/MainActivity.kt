@@ -266,9 +266,40 @@ class MainActivity : FlutterActivity() {
                 )!!
             }
 
-            contentResolver.openOutputStream(documentUri)?.use { os ->
-                os.write(content.toByteArray())
+            // For cloud-synced folders (Synology Drive, etc.), in-place writes may be reverted.
+            // Strategy: delete existing file + create new one with updated content.
+            val writeUri: Uri
+            
+            if (existingDocId != null) {
+                try {
+                    DocumentsContract.deleteDocument(contentResolver, 
+                        DocumentsContract.buildDocumentUriUsingTree(Uri.parse(basePath!!), existingDocId!!))
+                } catch (e: Exception) { /* ignore — will recreate anyway */ }
+                
+                val parentDocUri = DocumentsContract.buildChildDocumentsUriUsingTree(
+                    Uri.parse(basePath!!), parentId
+                )
+                writeUri = DocumentsContract.createDocument(
+                    contentResolver, parentDocUri, "text/markdown", fileName
+                ) ?: run {
+                    result.error("WRITE_ERROR", "Could not create document", null)
+                    return
+                }
+            } else {
+                writeUri = documentUri
             }
+            
+            val outputStream = contentResolver.openOutputStream(writeUri)
+            if (outputStream == null) {
+                result.error("WRITE_ERROR", "openOutputStream returned null", null)
+                return
+            }
+            
+            outputStream.use { os ->
+                os.write(content.toByteArray())
+                os.flush()
+            }
+            
             result.success(null)
         } catch (e: Exception) {
             result.error("WRITE_ERROR", e.message, null)

@@ -1867,16 +1867,14 @@ class _NoteScreenState extends State<NoteScreen> {
         padding: const EdgeInsets.only(left: 20.0),
         child: const Icon(Icons.delete, color: Colors.white),
       ),
-      onDismissed: (direction) {
+      confirmDismiss: (direction) async {
         widget.context.note.posts.removeWhere((p) => p.id == post.id);
-        setState(() {});
-        
-         try {
-           context.read<AppData>().repository.saveNote(widget.context.note, widget.context.subFolder, widget.context.folder);
-         } catch(e) { debugPrint("Delete save failed"); }
-
-
-
+        try {
+          await context.read<AppData>().repository.saveNote(
+            widget.context.note, widget.context.subFolder, widget.context.folder);
+        } catch(e) { debugPrint("Delete save failed: $e"); }
+        if (mounted) setState(() {});
+        return true;
       },
       child: GestureDetector(
         onTap: () => _copyToClipboard(post.content),
