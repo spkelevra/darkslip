@@ -1441,6 +1441,7 @@ class _NoteScreenState extends State<NoteScreen> {
   String? _highlightedPostId;
   Timer? _highlightTimer;
   Post? _editingPost; 
+  bool _isFullscreen = false;
 
 
   @override
@@ -1641,14 +1642,19 @@ class _NoteScreenState extends State<NoteScreen> {
 
 
   void _cancelEdit() {
-    _controller.clear();
-    _editingPost = null;
-    FocusScope.of(context).unfocus();
-    if (mounted) setState(() {});
-  }
+     _controller.clear();
+     _editingPost = null;
+     FocusScope.of(context).unfocus();
+     if (mounted) setState(() {});
+   }
 
 
-  void _editPost(Post post) {
+   void _toggleFullscreen() {
+     setState(() => _isFullscreen = !_isFullscreen);
+   }
+
+
+   void _editPost(Post post) {
     _controller.text = post.content;
     _controller.selection = TextSelection.collapsed(offset: _controller.text.length);
     _editingPost = post;
@@ -1734,9 +1740,79 @@ class _NoteScreenState extends State<NoteScreen> {
   @override
   Widget build(BuildContext context) {
     final bottomPadding = MediaQuery.of(context).padding.bottom;
-    final isDesktop = Platform.isWindows || Platform.isMacOS || Platform.isLinux;
+     final isDesktop = Platform.isWindows || Platform.isMacOS || Platform.isLinux;
 
-    final screenContent = Scaffold(
+     // In-place fullscreen editor — hides everything except the text field
+     if (_isFullscreen && _editingPost != null) {
+       return Scaffold(
+         backgroundColor: Colors.grey[900],
+         appBar: AppBar(
+           title: const Text('Fullscreen Editor', style: TextStyle(fontSize: 14)),
+           leading: IconButton(
+             icon: const Icon(Icons.fullscreen_exit, color: Colors.white70),
+             onPressed: () {
+               setState(() => _isFullscreen = false);
+             },
+             tooltip: 'Exit Fullscreen',
+           ),
+           actions: [
+             IconButton(
+               icon: const Icon(Icons.close, color: Colors.white70),
+               onPressed: _cancelEdit,
+               tooltip: 'Cancel Edit',
+             ),
+             IconButton(
+               icon: const Icon(Icons.check, color: Colors.white70),
+               onPressed: _saveOrAddPost,
+               tooltip: 'Save Edit',
+             ),
+           ],
+         ),
+         body: RawKeyboardListener(
+                focusNode: _keyboardFocusNode,
+                autofocus: false,
+                onKey: (event) {
+                  if ((Platform.isWindows || Platform.isMacOS || Platform.isLinux) && event is RawKeyDownEvent) {
+                    // Escape: exit fullscreen
+                    if (event.logicalKey == LogicalKeyboardKey.escape) {
+                      setState(() => _isFullscreen = false);
+                      return;
+                    }
+                    // Enter sends, Shift+Enter inserts newline
+                    if (event.logicalKey == LogicalKeyboardKey.enter) {
+                      if (event.isShiftPressed) {
+                        return;
+                      }
+                      _saveOrAddPost();
+                    }
+                  }
+                },
+                child: Padding(
+                  padding: EdgeInsets.only(left: 16, right: 16, top: 12, bottom: bottomPadding + 12),
+                  child: TextField(
+                    focusNode: _editorFocusNode,
+                    controller: _controller,
+                    maxLines: null,
+                    expands: true,
+                    keyboardType: TextInputType.multiline,
+                    textInputAction: TextInputAction.newline,
+                    style: const TextStyle(fontSize: 16),
+                    decoration: InputDecoration(
+                      hintText: 'Editing post...',
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                      contentPadding: const EdgeInsets.all(16),
+                      isDense: true,
+                      suffix: isDesktop
+                          ? const Text('Enter to send · Shift+Enter for newline', style: TextStyle(color: Colors.grey, fontSize: 10))
+                          : null,
+                    ),
+                  ),
+                ),
+              ),
+       );
+     }
+
+     final screenContent = Scaffold(
       appBar: AppBar(
         title: Text(widget.context.note.name),
         actions: [
@@ -1775,7 +1851,11 @@ class _NoteScreenState extends State<NoteScreen> {
               padding: EdgeInsets.only(left: 8, right: 8, bottom: bottomPadding + 4),
               color: Colors.grey[900],
               constraints: const BoxConstraints(maxHeight: 250),
-              child: Row(children: [
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Row(children: [
                               if (_editingPost != null)
                 IconButton(
                   icon: const Icon(Icons.close, color: Colors.white70),
@@ -1824,6 +1904,12 @@ class _NoteScreenState extends State<NoteScreen> {
             ),
                               if (_editingPost != null)
                 IconButton(
+                  icon: const Icon(Icons.fullscreen, color: Colors.white70),
+                  onPressed: isDesktop ? _toggleFullscreen : null,
+                  tooltip: 'Fullscreen Editor',
+                ),
+                              if (_editingPost != null)
+                IconButton(
                   icon: const Icon(Icons.check, color: Colors.white70),
                   onPressed: _saveOrAddPost,
                   tooltip: 'Save Edit',
@@ -1831,11 +1917,14 @@ class _NoteScreenState extends State<NoteScreen> {
               else
                 IconButton(icon: const Icon(Icons.send, color: Colors.white70), onPressed: _saveOrAddPost),
             ]),
+                   ],
+                 ),
+               ),
+             ),
             ),
-          ),
-        ],
-      ),
-    );
+            ],
+            ),
+            );
 
     if (isDesktop) {
       return RawKeyboardListener(
