@@ -1905,7 +1905,7 @@ class _NoteScreenState extends State<NoteScreen> {
                               if (_editingPost != null)
                 IconButton(
                   icon: const Icon(Icons.fullscreen, color: Colors.white70),
-                  onPressed: isDesktop ? _toggleFullscreen : null,
+                  onPressed: _toggleFullscreen,
                   tooltip: 'Fullscreen Editor',
                 ),
                               if (_editingPost != null)
