@@ -255,50 +255,56 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
-            val documentUri: Uri = if (existingDocId != null) {
-                DocumentsContract.buildDocumentUriUsingTree(Uri.parse(basePath!!), existingDocId!!)
-            } else {
-                val parentDocUri = DocumentsContract.buildChildDocumentsUriUsingTree(
-                    Uri.parse(basePath!!), parentId
-                )
-                DocumentsContract.createDocument(
-                    contentResolver, parentDocUri, "text/markdown", fileName
-                )!!
-            }
+            val parentDocUri = DocumentsContract.buildChildDocumentsUriUsingTree(
+                Uri.parse(basePath!!), parentId
+            )
 
-            // For cloud-synced folders (Synology Drive, etc.), in-place writes may be reverted.
-            // Strategy: delete existing file + create new one with updated content.
-            val writeUri: Uri
-            
             if (existingDocId != null) {
-                try {
-                    DocumentsContract.deleteDocument(contentResolver, 
-                        DocumentsContract.buildDocumentUriUsingTree(Uri.parse(basePath!!), existingDocId!!))
-                } catch (e: Exception) { /* ignore — will recreate anyway */ }
-                
-                val parentDocUri = DocumentsContract.buildChildDocumentsUriUsingTree(
-                    Uri.parse(basePath!!), parentId
-                )
-                writeUri = DocumentsContract.createDocument(
-                    contentResolver, parentDocUri, "text/markdown", fileName
+                // Write-to-temp-then-swap: content hits disk before old file is touched.
+                // Sync apps see a new file (same as delete+recreate), but we never lose data.
+                val tmpName = "$fileName.tmp"
+                val tempUri = DocumentsContract.createDocument(
+                    contentResolver, parentDocUri, "text/markdown", tmpName
                 ) ?: run {
-                    result.error("WRITE_ERROR", "Could not create document", null)
+                    result.error("WRITE_ERROR", "Could not create temp document", null)
                     return
                 }
+
+                // 1. Write content to temp file and flush to disk
+                contentResolver.openOutputStream(tempUri)?.use { os ->
+                    os.write(content.toByteArray())
+                    os.flush()
+                } ?: run {
+                    result.error("WRITE_ERROR", "Could not open temp stream", null)
+                    return
+                }
+
+                // 2. Delete old file — content is already safe in temp
+                try {
+                    DocumentsContract.deleteDocument(
+                        contentResolver,
+                        DocumentsContract.buildDocumentUriUsingTree(Uri.parse(basePath!!), existingDocId!!)
+                    )
+                } catch (_: Exception) { /* ignore — will be replaced anyway */ }
+
+                // 3. Atomically swap temp → final name
+                DocumentsContract.renameDocument(contentResolver, tempUri, fileName)
             } else {
-                writeUri = documentUri
+                // New file — create and write directly
+                val documentUri = DocumentsContract.createDocument(
+                    contentResolver, parentDocUri, "text/markdown", fileName
+                )!!
+                contentResolver.openOutputStream(documentUri)?.use { os ->
+                    os.write(content.toByteArray())
+                    os.flush()
+                } ?: run {
+                    result.error("WRITE_ERROR", "Could not open stream for new document", null)
+                    return
+                }
             }
-            
-            val outputStream = contentResolver.openOutputStream(writeUri)
-            if (outputStream == null) {
-                result.error("WRITE_ERROR", "openOutputStream returned null", null)
-                return
-            }
-            
-            outputStream.use { os ->
-                os.write(content.toByteArray())
-                os.flush()
-            }
+
+            // Clean up any orphaned .tmp files from crashes in previous saves
+            cleanupTempFiles(Uri.parse(basePath!!), parentId, fileName)
             
             result.success(null)
         } catch (e: Exception) {
@@ -411,6 +417,27 @@ class MainActivity : FlutterActivity() {
             result.success(null)
         } catch (e: Exception) {
             result.error("RENAME_ERROR", e.message, null)
+        }
+    }
+
+    /** Remove orphaned .tmp files from previous interrupted saves. */
+    private fun cleanupTempFiles(treeUri: Uri, parentId: String, noteFileName: String) {
+        val expected = "$noteFileName.tmp" // matches temp name pattern used in handleWriteFile
+        contentResolver.query(
+            DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentId), null, null, null, null
+        )?.use { cursor ->
+            val nameIdx = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+            val docIdIdx = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+            while (cursor.moveToNext()) {
+                if (cursor.getString(nameIdx) == expected) {
+                    try {
+                        DocumentsContract.deleteDocument(
+                            contentResolver,
+                            DocumentsContract.buildDocumentUriUsingTree(treeUri, cursor.getString(docIdIdx))
+                        )
+                    } catch (_: Exception) {}
+                }
+            }
         }
     }
 }
